@@ -1,0 +1,86 @@
+# Visual Studio files
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.VC.db-shm
+*.VC.db-wal
+
+# Local development folders
+docs/
+
+# Build intermediates and outputs
+Debug/
+Release/
+x64/
+x86/
+ipch/
+*.aps
+*.ncb
+*.opt
+*.plg
+*.idb
+*.ilk
+*.ipdb
+*.iobj
+*.rsp
+*.sdf
+*.cache
+*.lastbuildstate
+*.tlog
+*.manifest
+
+# Build results
+*.log
+*.tmp
+*.temp
+
+# Visual Studio project files (keep .vcxproj but ignore user-specific)
+*.vcxproj.user
+
+# Compiled files (except Libraries folder)
+*.exe
+*.dll
+*.obj
+*.exp
+
+# OpenGL/Cloth Simulation specific
+# Commit all Libraries (include headers and lib binaries)
+# Libraries/include/ - Headers
+# Libraries/lib/ - Static libraries and debug symbols
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# C++ specific
+*.o
+*.a
+*.so
+*.dylib
+
+# CMake (if used later)
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# Resharper (if using Rider)
+_ReSharper*/
+*.DotSettings.user
+
+# Test files (if added later)
+test_results/
+TestResults/
+
+# Documentation generated files
+doc/
+docs/generated/
+!/README.md

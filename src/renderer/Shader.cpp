@@ -1,0 +1,122 @@
+#include "Shader.h"
+#include <glad/glad.h>
+#include <fstream>
+#include <sstream>
+#include <iostream>
+
+namespace cloth {
+
+Shader::Shader(const std::string& vertexSrc, const std::string& fragmentSrc) {
+    m_RendererID = CreateShaderProgram(vertexSrc, fragmentSrc);
+}
+
+Shader::~Shader() {
+    glDeleteProgram(m_RendererID);
+}
+
+void Shader::Bind() const {
+    glUseProgram(m_RendererID);
+}
+
+void Shader::Unbind() const {
+    glUseProgram(0);
+}
+
+void Shader::SetBool(const std::string& name, bool value) const {
+    glUniform1i(GetUniformLocation(name), static_cast<int>(value));
+}
+
+void Shader::SetInt(const std::string& name, int value) const {
+    glUniform1i(GetUniformLocation(name), value);
+}
+
+void Shader::SetFloat(const std::string& name, float value) const {
+    glUniform1f(GetUniformLocation(name), value);
+}
+
+void Shader::SetVec2(const std::string& name, const glm::vec2& value) const {
+    glUniform2fv(GetUniformLocation(name), 1, &value[0]);
+}
+
+void Shader::SetVec3(const std::string& name, const glm::vec3& value) const {
+    glUniform3fv(GetUniformLocation(name), 1, &value[0]);
+}
+
+void Shader::SetVec4(const std::string& name, const glm::vec4& value) const {
+    glUniform4fv(GetUniformLocation(name), 1, &value[0]);
+}
+
+void Shader::SetMat4(const std::string& name, const glm::mat4& value) const {
+    glUniformMatrix4fv(GetUniformLocation(name), 1, GL_FALSE, &value[0][0]);
+}
+
+int Shader::GetUniformLocation(const std::string& name) const {
+    if (m_UniformLocationCache.find(name) != m_UniformLocationCache.end()) {
+        return m_UniformLocationCache[name];
+    }
+
+    int location = glGetUniformLocation(m_RendererID, name.c_str());
+    if (location == -1) {
+        std::cout << "Warning: Uniform '" << name << "' does not exist" << std::endl;
+    }
+    m_UniformLocationCache[name] = location;
+    return location;
+}
+
+Shader Shader::CreateFromFile(const std::string& vertexPath, const std::string& fragmentPath) {
+    std::ifstream vFile(vertexPath);
+    std::ifstream fFile(fragmentPath);
+
+    if (!vFile.is_open() || !fFile.is_open()) {
+        std::cerr << "Failed to open shader files: " << vertexPath << ", " << fragmentPath << std::endl;
+        return Shader();
+    }
+
+    std::stringstream vStream, fStream;
+    vStream << vFile.rdbuf();
+    fStream << fFile.rdbuf();
+
+    return Shader(vStream.str(), fStream.str());
+}
+
+unsigned int Shader::CompileShader(unsigned int type, const std::string& source) {
+    unsigned int id = glCreateShader(type);
+    const char* src = source.c_str();
+    glShaderSource(id, 1, &src, nullptr);
+    glCompileShader(id);
+
+    int result;
+    glGetShaderiv(id, GL_COMPILE_STATUS, &result);
+    if (result == GL_FALSE) {
+        int length;
+        glGetShaderiv(id, GL_INFO_LOG_LENGTH, &length);
+        char* message = (char*)alloca(length * sizeof(char));
+        glGetShaderInfoLog(id, length, &length, message);
+        std::cerr << "Failed to compile " << (type == GL_VERTEX_SHADER ? "vertex" : "fragment") 
+                  << " shader!" << std::endl << message << std::endl;
+        glDeleteShader(id);
+        return 0;
+    }
+
+    return id;
+}
+
+unsigned int Shader::CreateShaderProgram(const std::string& vertexSrc, const std::string& fragmentSrc) {
+    unsigned int program = glCreateProgram();
+    unsigned int vs = CompileShader(GL_VERTEX_SHADER, vertexSrc);
+    unsigned int fs = CompileShader(GL_FRAGMENT_SHADER, fragmentSrc);
+
+    glAttachShader(program, vs);
+    glAttachShader(program, fs);
+    glLinkProgram(program);
+    glValidateProgram(program);
+
+    glDetachShader(program, vs);
+    glDeleteShader(vs);
+    glDetachShader(program, fs);
+    glDeleteShader(fs);
+
+    return program;
+}
+
+} // namespace cloth
