@@ -64,7 +64,8 @@ public:
 
     // Calculate squared distance (faster, no sqrt)
     static float DistanceSquared(const glm::vec3& a, const glm::vec3& b) {
-        return glm::length2(b - a);
+        glm::vec3 diff = b - a;
+        return glm::dot(diff, diff);
     }
 };
 

@@ -51,7 +51,10 @@ void Texture::LoadTexture(const std::string& path) {
         format = GL_RGBA;
 
     glGenTextures(1, &m_RendererID);
+    std::cout << "[DEBUG] glGenTextures created ID: " << m_RendererID << std::endl;
+    
     glBindTexture(GL_TEXTURE_2D, m_RendererID);
+    std::cout << "[DEBUG] After glBindTexture, glIsTexture = " << (int)glIsTexture(m_RendererID) << std::endl;
 
     // Set texture parameters
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
@@ -64,7 +67,8 @@ void Texture::LoadTexture(const std::string& path) {
 
     stbi_image_free(data);
 
-    std::cout << "Loaded texture: " << path << " (" << m_Width << "x" << m_Height << ")" << std::endl;
+    std::cout << "[DEBUG] Final glIsTexture(" << m_RendererID << ") = " << (int)glIsTexture(m_RendererID) << std::endl;
+    std::cout << "Texture loaded: " << path << " (" << m_Width << "x" << m_Height << "), ID: " << m_RendererID << std::endl;
 }
 
 Texture Texture::CreateFromFile(const std::string& path) {

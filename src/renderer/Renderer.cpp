@@ -1,9 +1,10 @@
 #include "Renderer.h"
+#include "world/Terrain.h"
 #include <glad/glad.h>
 
 namespace cloth {
 
-Renderer::Renderer() : m_SceneStarted(false) {
+Renderer::Renderer() : m_ViewProjectionMatrix(1.0f), m_SceneStarted(false) {
     // Create VAO
     glGenVertexArrays(1, &m_VAO);
     glGenBuffers(1, &m_VBO);
@@ -101,6 +102,10 @@ void Renderer::DrawTriangles(const std::vector<Vertex>& vertices, const Shader& 
 
 void Renderer::SetViewport(int width, int height) {
     glViewport(0, 0, width, height);
+}
+
+void Renderer::DrawTerrain(const Terrain& terrain, const Shader& shader) {
+    terrain.Draw(shader);
 }
 
 } // namespace cloth

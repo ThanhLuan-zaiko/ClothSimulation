@@ -158,6 +158,8 @@
     <ClCompile Include="src\physics\Constraint.cpp" />
     <ClCompile Include="src\cloth\Cloth.cpp" />
     <ClCompile Include="src\cloth\ClothMesh.cpp" />
+    <ClCompile Include="src\world\Terrain.cpp" />
+    <ClCompile Include="src\world\World.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\core\Application.h" />
@@ -174,7 +176,33 @@
     <ClInclude Include="src\cloth\ClothMesh.h" />
     <ClInclude Include="src\utils\MathUtils.h" />
     <ClInclude Include="src\utils\Timer.h" />
+    <ClInclude Include="src\utils\Types.h" />
+    <ClInclude Include="src\world\Terrain.h" />
+    <ClInclude Include="src\world\World.h" />
   </ItemGroup>
+
+  <!-- Shaders for Solution Explorer display -->
+  <ItemGroup>
+    <None Include="shaders\terrain\terrain.vert" />
+    <None Include="shaders\terrain\terrain.frag" />
+    <None Include="shaders\terrain\terrain_test.frag" />
+    <None Include="shaders\cloth\cloth.vert" />
+    <None Include="shaders\cloth\cloth.frag" />
+    <None Include="shaders\basic\basic.vert" />
+    <None Include="shaders\basic\basic.frag" />
+  </ItemGroup>
+
+  <!-- Copy shaders to output directory -->
+  <Target Name="CopyShaders" AfterTargets="Build">
+    <Copy SourceFiles="$(ProjectDir)shaders\terrain\terrain.vert" DestinationFiles="$(OutDir)shaders\terrain\terrain.vert" />
+    <Copy SourceFiles="$(ProjectDir)shaders\terrain\terrain.frag" DestinationFiles="$(OutDir)shaders\terrain\terrain.frag" />
+    <Copy SourceFiles="$(ProjectDir)shaders\terrain\terrain_test.frag" DestinationFiles="$(OutDir)shaders\terrain\terrain_test.frag" />
+    <Copy SourceFiles="$(ProjectDir)shaders\cloth\cloth.vert" DestinationFiles="$(OutDir)shaders\cloth\cloth.vert" />
+    <Copy SourceFiles="$(ProjectDir)shaders\cloth\cloth.frag" DestinationFiles="$(OutDir)shaders\cloth\cloth.frag" />
+    <Copy SourceFiles="$(ProjectDir)shaders\basic\basic.vert" DestinationFiles="$(OutDir)shaders\basic\basic.vert" />
+    <Copy SourceFiles="$(ProjectDir)shaders\basic\basic.frag" DestinationFiles="$(OutDir)shaders\basic\basic.frag" />
+  </Target>
+
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

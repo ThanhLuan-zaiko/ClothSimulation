@@ -92,12 +92,13 @@ unsigned int Shader::CompileShader(unsigned int type, const std::string& source)
         glGetShaderiv(id, GL_INFO_LOG_LENGTH, &length);
         char* message = (char*)alloca(length * sizeof(char));
         glGetShaderInfoLog(id, length, &length, message);
-        std::cerr << "Failed to compile " << (type == GL_VERTEX_SHADER ? "vertex" : "fragment") 
+        std::cerr << "Failed to compile " << (type == GL_VERTEX_SHADER ? "vertex" : "fragment")
                   << " shader!" << std::endl << message << std::endl;
         glDeleteShader(id);
         return 0;
     }
 
+    std::cout << "Shader compiled OK: " << (type == GL_VERTEX_SHADER ? "vertex" : "fragment") << std::endl;
     return id;
 }
 

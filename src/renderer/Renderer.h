@@ -2,16 +2,11 @@
 
 #include "Shader.h"
 #include "Camera.h"
+#include "utils/Types.h"
 #include <glm/glm.hpp>
 #include <vector>
 
 namespace cloth {
-
-struct Vertex {
-    glm::vec3 position;
-    glm::vec3 normal;
-    glm::vec2 texCoord;
-};
 
 class Renderer {
 public:
@@ -25,6 +20,7 @@ public:
     void DrawLines(const std::vector<glm::vec3>& points, const glm::vec4& color);
     void DrawPoints(const std::vector<glm::vec3>& points, const glm::vec4& color, float size = 5.0f);
     void DrawTriangles(const std::vector<Vertex>& vertices, const Shader& shader);
+    void DrawTerrain(const class Terrain& terrain, const Shader& shader);
 
     void SetViewport(int width, int height);
 
