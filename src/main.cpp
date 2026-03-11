@@ -55,11 +55,19 @@ int main() {
     std::cout << "=== Cloth Simulation ===" << std::endl;
     std::cout << "Controls:" << std::endl;
     std::cout << "  WASD/Arrows - Move camera" << std::endl;
+    std::cout << "  Shift + WASD - Fast camera (sprint)" << std::endl;
     std::cout << "  Mouse - Rotate camera (click and drag)" << std::endl;
+    std::cout << "  +/- or PageUp/PageDown - Zoom in/out" << std::endl;
     std::cout << "  Space - Reset cloth" << std::endl;
+    std::cout << "  F - Toggle terrain wireframe" << std::endl;
     std::cout << "  T/Shift+T - Change terrain texture" << std::endl;
     std::cout << "  1-4 - Select terrain texture directly" << std::endl;
     std::cout << "  Escape - Exit" << std::endl;
+    std::cout << std::endl;
+    std::cout << "Features:" << std::endl;
+    std::cout << "  - Mountain terrain with heightmap" << std::endl;
+    std::cout << "  - Skybox with gradient sky" << std::endl;
+    std::cout << "  - Pillars and rocks" << std::endl;
     std::cout << std::endl;
     std::cout << "Tip: Click and drag mouse to rotate camera and look down at the terrain!" << std::endl;
     std::cout << std::endl;
@@ -142,9 +150,22 @@ int main() {
         GetAssetPath("shaders/terrain/terrain.frag")
     );
 
-    // NOW create world (terrain) - GL context is definitely ready now
+    // Create world (terrain) - GL context is definitely ready now
     World world;
     world.Initialize(GetAssetPath("assets/textures/lands/"));
+    
+    // Set terrain to mountain mode for more interesting landscape
+    world.GetTerrain().GenerateMountainHeightmap(3.0f);
+    world.GetTerrain().SetHeightScale(1.0f);
+    
+    // Add pillars to hold the cloth
+    world.AddPillar(glm::vec3(-2.25f, 2.0f, 0.0f), 5.0f, 0.15f);
+    world.AddPillar(glm::vec3(2.25f, 2.0f, 0.0f), 5.0f, 0.15f);
+    
+    // Add some decorative rocks
+    world.AddRock(glm::vec3(-3.0f, 0.0f, -2.0f), 0.8f, 0.4f);
+    world.AddRock(glm::vec3(3.0f, 0.0f, 2.0f), 0.6f, 0.3f);
+    world.AddRock(glm::vec3(0.0f, 0.0f, 3.0f), 1.0f, 0.5f);
 
     // Camera control variables
     bool mousePressed = false;
@@ -152,11 +173,23 @@ int main() {
     double lastMouseY = 0;
     float cameraYaw = 0.0f;
     float cameraPitch = 0.0f;
+    float cameraFOV = 45.0f; // Store FOV for zoom
+    
+    // Key repeat tracking for texture switching (fast response)
+    float keyRepeatTimer = 0.0f;
+    float keyRepeatDelay = 0.15f; // Fast repeat: 0.15s between changes
+    bool lastTKeyPressed = false;
+    bool lastShiftKeyPressed = false;
+    bool lastFKeyPressed = false;
+    bool lastNumberKeysPressed[9] = {false};
 
     // Set update callback
     app.SetUpdateCallback([&](float deltaTime) {
-        // Camera controls
-        float cameraSpeed = 5.0f * deltaTime;
+        // Camera controls - increased base speed for faster movement
+        float baseCameraSpeed = 30.0f * deltaTime;
+        float cameraSpeed = Input::IsKeyPressed(GLFW_KEY_LEFT_SHIFT) || Input::IsKeyPressed(GLFW_KEY_RIGHT_SHIFT)
+                           ? baseCameraSpeed * 4.0f  // Sprint mode - very fast
+                           : baseCameraSpeed;
 
         if (Input::IsKeyPressed(GLFW_KEY_W) || Input::IsKeyPressed(GLFW_KEY_UP)) {
             camera.MoveForward(cameraSpeed);
@@ -169,6 +202,17 @@ int main() {
         }
         if (Input::IsKeyPressed(GLFW_KEY_D) || Input::IsKeyPressed(GLFW_KEY_RIGHT)) {
             camera.MoveRight(cameraSpeed);
+        }
+
+        // Camera zoom with scroll wheel - faster zoom
+        float scrollSpeed = 40.0f * deltaTime;
+        if (Input::IsKeyPressed(GLFW_KEY_EQUAL) || Input::IsKeyPressed(GLFW_KEY_PAGE_UP)) {
+            cameraFOV -= scrollSpeed;
+            if (cameraFOV < 10.0f) cameraFOV = 10.0f;
+        }
+        if (Input::IsKeyPressed(GLFW_KEY_MINUS) || Input::IsKeyPressed(GLFW_KEY_PAGE_DOWN)) {
+            cameraFOV += scrollSpeed;
+            if (cameraFOV > 90.0f) cameraFOV = 90.0f;
         }
 
         // Mouse look
@@ -187,8 +231,9 @@ int main() {
             float deltaX = static_cast<float>(currentX - lastMouseX);
             float deltaY = static_cast<float>(currentY - lastMouseY);
 
-            cameraYaw += deltaX * 0.1f;
-            cameraPitch -= deltaY * 0.1f;
+            // Increased mouse sensitivity for faster look around
+            cameraYaw += deltaX * 0.2f;
+            cameraPitch -= deltaY * 0.2f;
 
             if (cameraPitch > 89.0f) cameraPitch = 89.0f;
             if (cameraPitch < -89.0f) cameraPitch = -89.0f;
@@ -204,35 +249,58 @@ int main() {
             cloth.Reset();
         }
 
-        // Terrain texture selection
-        if (Input::IsKeyPressed(GLFW_KEY_T)) {
-            if (Input::IsKeyPressed(GLFW_KEY_LEFT_SHIFT) || Input::IsKeyPressed(GLFW_KEY_RIGHT_SHIFT)) {
+        // Update key repeat timer
+        keyRepeatTimer -= deltaTime;
+
+        // Terrain texture selection - FAST response (no blocking while loops)
+        bool tKeyPressed = Input::IsKeyPressed(GLFW_KEY_T);
+        bool shiftKeyPressed = Input::IsKeyPressed(GLFW_KEY_LEFT_SHIFT) || Input::IsKeyPressed(GLFW_KEY_RIGHT_SHIFT);
+
+        if (tKeyPressed && !lastTKeyPressed) {
+            // First press - immediate action
+            if (shiftKeyPressed) {
                 world.PreviousTexture();
             } else {
                 world.NextTexture();
             }
-            // Small delay to prevent rapid cycling
-            while (Input::IsKeyPressed(GLFW_KEY_T)) {
-                Window::PollEvents();
+            keyRepeatTimer = keyRepeatDelay;
+        } else if (tKeyPressed && keyRepeatTimer <= 0) {
+            // Key repeat
+            if (shiftKeyPressed) {
+                world.PreviousTexture();
+            } else {
+                world.NextTexture();
             }
+            keyRepeatTimer = keyRepeatDelay;
         }
+        lastTKeyPressed = tKeyPressed;
+        lastShiftKeyPressed = shiftKeyPressed;
 
-        // Direct texture selection with number keys
+        // Direct texture selection with number keys - FAST response
         int textureCount = world.GetTextureCount();
         for (int i = 0; i < textureCount && i < 9; ++i) {
-            if (Input::IsKeyPressed(GLFW_KEY_1 + i)) {
+            bool numKeyPressed = Input::IsKeyPressed(GLFW_KEY_1 + i);
+            if (numKeyPressed && !lastNumberKeysPressed[i]) {
                 world.SetCurrentTexture(i);
-                while (Input::IsKeyPressed(GLFW_KEY_1 + i)) {
-                    Window::PollEvents();
-                }
-                break;
+                keyRepeatTimer = keyRepeatDelay;
             }
+            lastNumberKeysPressed[i] = numKeyPressed;
         }
+
+        // Toggle terrain wireframe - FAST response
+        bool fKeyPressed = Input::IsKeyPressed(GLFW_KEY_F);
+        if (fKeyPressed && !lastFKeyPressed) {
+            world.GetTerrain().SetWireframe(!world.GetTerrain().IsWireframe());
+        }
+        lastFKeyPressed = fKeyPressed;
 
         // Exit
         if (Input::IsKeyPressed(GLFW_KEY_ESCAPE)) {
             app.Quit();
         }
+
+        // Update camera FOV
+        camera.SetFOV(cameraFOV);
 
         // Update physics
         physicsWorld.Update(deltaTime);
@@ -317,30 +385,133 @@ int main() {
 
         // === Draw terrain with DIRECT texture ===
         glDisable(GL_CULL_FACE);
-        
+
         if (textureLoaded && glIsTexture(directTextureID)) {
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, directTextureID);
-            
+
             terrainShader.Bind();
             terrainShader.SetMat4("u_Model", model);
             terrainShader.SetMat4("u_View", camera.GetViewMatrix());
             terrainShader.SetMat4("u_Projection", camera.GetProjectionMatrix());
             terrainShader.SetInt("u_TerrainTexture", 0);
-            
+
             glBindVertexArray(directVAO);
             glEnableVertexAttribArray(0);
             glEnableVertexAttribArray(1);
             glEnableVertexAttribArray(2);
-            
+
             glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(directIndexCount),
                            GL_UNSIGNED_INT, 0);
-            
+
             glBindVertexArray(0);
             terrainShader.Unbind();
         }
+
+        // === Draw skybox (after terrain, before cloth) ===
+        glDepthFunc(GL_LEQUAL);
+        glm::mat4 skyboxView = glm::mat4(glm::mat3(camera.GetViewMatrix())); // Remove translation
+        glm::mat4 skyboxProjection = camera.GetProjectionMatrix();
         
+        // Simple skybox shader (inline)
+        static Shader skyboxShader(
+            "#version 460 core\n"
+            "layout (location = 0) in vec3 a_Position;\n"
+            "out vec3 v_TexCoord;\n"
+            "uniform mat4 u_Projection;\n"
+            "uniform mat4 u_View;\n"
+            "void main() {\n"
+            "    v_TexCoord = a_Position;\n"
+            "    vec4 pos = u_Projection * u_View * vec4(a_Position, 1.0);\n"
+            "    gl_Position = pos.xyww;\n"
+            "}\0",
+            "#version 460 core\n"
+            "in vec3 v_TexCoord;\n"
+            "out vec4 out_Color;\n"
+            "uniform samplerCube u_Skybox;\n"
+            "void main() {\n"
+            "    out_Color = texture(u_Skybox, v_TexCoord);\n"
+            "}\0"
+        );
+        
+        skyboxShader.Bind();
+        skyboxShader.SetMat4("u_Projection", skyboxProjection);
+        skyboxShader.SetMat4("u_View", skyboxView);
+        skyboxShader.SetInt("u_Skybox", 0);
+        
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, world.GetSkybox().GetTextureID());
+        
+        glBindVertexArray(world.GetSkybox().GetVAO());
+        glEnableVertexAttribArray(0);
+        glDrawArrays(GL_TRIANGLES, 0, 36);
+        glBindVertexArray(0);
+        
+        skyboxShader.Unbind();
+        glDepthFunc(GL_LESS);
+
         glEnable(GL_CULL_FACE);
+
+        // === Draw world objects (pillars, rocks) ===
+        static Shader objectShader(
+            "#version 460 core\n"
+            "layout (location = 0) in vec3 a_Position;\n"
+            "layout (location = 1) in vec3 a_Normal;\n"
+            "out vec3 v_Normal;\n"
+            "out vec3 v_FragPos;\n"
+            "uniform mat4 u_Model;\n"
+            "uniform mat4 u_View;\n"
+            "uniform mat4 u_Projection;\n"
+            "void main() {\n"
+            "    v_FragPos = vec3(u_Model * vec4(a_Position, 1.0));\n"
+            "    v_Normal = mat3(transpose(inverse(u_Model))) * a_Normal;\n"
+            "    gl_Position = u_Projection * u_View * u_Model * vec4(a_Position, 1.0);\n"
+            "}\0",
+            "#version 460 core\n"
+            "in vec3 v_Normal;\n"
+            "in vec3 v_FragPos;\n"
+            "out vec4 out_Color;\n"
+            "uniform vec3 u_Color;\n"
+            "uniform vec3 u_LightPos;\n"
+            "uniform vec3 u_ViewPos;\n"
+            "void main() {\n"
+            "    float ambientStrength = 0.3;\n"
+            "    vec3 ambient = ambientStrength * vec3(0.3, 0.3, 0.35);\n"
+            "    vec3 norm = normalize(v_Normal);\n"
+            "    vec3 lightDir = normalize(u_LightPos - v_FragPos);\n"
+            "    float diff = max(dot(norm, lightDir), 0.0);\n"
+            "    vec3 diffuse = diff * vec3(1.0, 0.95, 0.9);\n"
+            "    float specularStrength = 0.2;\n"
+            "    vec3 viewDir = normalize(u_ViewPos - v_FragPos);\n"
+            "    vec3 reflectDir = reflect(-lightDir, norm);\n"
+            "    float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32);\n"
+            "    vec3 specular = specularStrength * vec3(1.0, 1.0, 1.0) * spec;\n"
+            "    vec3 result = (ambient + diffuse + specular) * u_Color;\n"
+            "    out_Color = vec4(result, 1.0);\n"
+            "}\0"
+        );
+        
+        objectShader.Bind();
+        objectShader.SetMat4("u_View", camera.GetViewMatrix());
+        objectShader.SetMat4("u_Projection", camera.GetProjectionMatrix());
+        objectShader.SetVec3("u_LightPos", glm::vec3(5.0f, 10.0f, 5.0f));
+        objectShader.SetVec3("u_ViewPos", camera.GetPosition());
+        
+        for (const auto& obj : world.GetObjects()) {
+            glm::mat4 objModel = glm::translate(glm::mat4(1.0f), obj->GetPosition());
+            objModel = glm::scale(objModel, obj->GetScale());
+            
+            objectShader.SetMat4("u_Model", objModel);
+            objectShader.SetVec3("u_Color", obj->GetColor());
+            
+            glBindVertexArray(obj->GetVAO());
+            glEnableVertexAttribArray(0);
+            glEnableVertexAttribArray(1);
+            glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(obj->GetIndexCount()), GL_UNSIGNED_INT, 0);
+        }
+        
+        objectShader.Unbind();
+        glBindVertexArray(0);
 
         // === Draw cloth AFTER terrain ===
         clothShader.Bind();

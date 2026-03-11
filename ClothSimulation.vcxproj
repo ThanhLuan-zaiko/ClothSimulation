@@ -160,6 +160,8 @@
     <ClCompile Include="src\cloth\ClothMesh.cpp" />
     <ClCompile Include="src\world\Terrain.cpp" />
     <ClCompile Include="src\world\World.cpp" />
+    <ClCompile Include="src\world\Skybox.cpp" />
+    <ClCompile Include="src\world\WorldObject.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\core\Application.h" />

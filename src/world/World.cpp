@@ -8,7 +8,7 @@ namespace fs = std::filesystem;
 namespace cloth {
 
 World::World()
-    : m_Terrain(20.0f, 20.0f, 20), m_CurrentTextureIndex(0), m_TexturesLoaded(false) {
+    : m_Terrain(100.0f, 100.0f, 100, 10.0f), m_CurrentTextureIndex(0), m_TexturesLoaded(false) {
 }
 
 World::~World() {
@@ -21,6 +21,10 @@ void World::Initialize(const std::string& textureDir) {
         std::cerr << "Warning: No textures found in " << textureDir << std::endl;
         return;
     }
+
+    // Initialize skybox
+    m_Skybox.Initialize();
+    m_Skybox.LoadTextures(textureDir);
 
     std::cout << "World initialized with " << m_TexturePaths.size() << " textures (paths scanned)" << std::endl;
     std::cout << "Textures will be loaded on first render call" << std::endl;
@@ -117,6 +121,24 @@ const std::string& World::GetCurrentTextureName() const {
         return m_TextureNames[m_CurrentTextureIndex];
     }
     return empty;
+}
+
+void World::AddObject(std::shared_ptr<WorldObject> obj) {
+    m_Objects.push_back(obj);
+}
+
+Pillar* World::AddPillar(const glm::vec3& position, float height, float radius) {
+    auto pillar = std::make_shared<Pillar>(height, radius);
+    pillar->SetPosition(position);
+    m_Objects.push_back(pillar);
+    return pillar.get();
+}
+
+Rock* World::AddRock(const glm::vec3& position, float size, float irregularity) {
+    auto rock = std::make_shared<Rock>(size, irregularity);
+    rock->SetPosition(position);
+    m_Objects.push_back(rock);
+    return rock.get();
 }
 
 } // namespace cloth

@@ -16,10 +16,12 @@ public:
 
     void SetPosition(const glm::vec3& position) { m_Position = position; }
     void SetRotation(const glm::vec3& rotation) { m_Rotation = rotation; }
+    void SetFOV(float fov) { m_FOV = fov; }
     void SetProjection(float aspectRatio);
 
     glm::vec3 GetPosition() const { return m_Position; }
     glm::vec3 GetRotation() const { return m_Rotation; }
+    float GetFOV() const { return m_FOV; }
     glm::mat4 GetViewMatrix() const;
     glm::mat4 GetProjectionMatrix() const { return m_ProjectionMatrix; }
     glm::mat4 GetViewProjectionMatrix() const { return GetProjectionMatrix() * GetViewMatrix(); }

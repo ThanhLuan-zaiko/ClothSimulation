@@ -5,12 +5,13 @@
 #include "utils/Types.h"
 #include <string>
 #include <vector>
+#include <functional>
 
 namespace cloth {
 
 class Terrain {
 public:
-    Terrain(float width = 20.0f, float depth = 20.0f, int segments = 20);
+    Terrain(float width = 50.0f, float depth = 50.0f, int segments = 50, float textureTiling = 5.0f);
     ~Terrain();
 
     void LoadTexture(const std::string& path);
@@ -26,9 +27,27 @@ public:
     unsigned int GetVAO() const { return m_VAO; }
     unsigned int GetIndexCount() const { return static_cast<unsigned int>(m_Indices.size()); }
 
+    float GetTextureTiling() const { return m_TextureTiling; }
+    void SetTextureTiling(float tiling) { m_TextureTiling = tiling; }
+
+    // Heightmap controls
+    void SetHeightScale(float scale) { m_HeightScale = scale; RegenerateMesh(); }
+    float GetHeightScale() const { return m_HeightScale; }
+    
+    void SetWireframe(bool wireframe) { m_Wireframe = wireframe; }
+    bool IsWireframe() const { return m_Wireframe; }
+    
+    // Generate height using different methods
+    void GenerateFlatHeightmap();
+    void GenerateNoiseHeightmap(float amplitude = 2.0f, float frequency = 0.5f);
+    void GenerateMountainHeightmap(float peakHeight = 5.0f);
+    void GenerateValleyHeightmap(float depth = 3.0f);
+
 private:
     void GenerateMesh(float width, float depth, int segments);
     void SetupBuffers();
+    void RegenerateMesh();
+    float CalculateHeight(float x, float z);
 
     unsigned int m_VAO;
     unsigned int m_VBO;
@@ -43,6 +62,15 @@ private:
     float m_Width;
     float m_Depth;
     int m_Segments;
+    float m_TextureTiling;
+    float m_HeightScale;
+    bool m_Wireframe;
+    
+    // Heightmap type
+    enum class HeightmapType { Flat, Noise, Mountain, Valley };
+    HeightmapType m_HeightmapType;
+    float m_HeightAmplitude;
+    float m_HeightFrequency;
 };
 
 } // namespace cloth

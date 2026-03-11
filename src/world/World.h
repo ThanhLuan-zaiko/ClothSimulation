@@ -1,8 +1,11 @@
 #pragma once
 
 #include "Terrain.h"
+#include "Skybox.h"
+#include "WorldObject.h"
 #include <string>
 #include <vector>
+#include <memory>
 
 namespace cloth {
 
@@ -27,10 +30,23 @@ public:
     const std::string& GetCurrentTextureName() const;
     const std::vector<std::string>& GetTexturePaths() const { return m_TexturePaths; }
 
+    Skybox& GetSkybox() { return m_Skybox; }
+    const Skybox& GetSkybox() const { return m_Skybox; }
+
+    // World objects management
+    void AddObject(std::shared_ptr<WorldObject> obj);
+    const std::vector<std::shared_ptr<WorldObject>>& GetObjects() const { return m_Objects; }
+    
+    // Helper methods to add objects
+    Pillar* AddPillar(const glm::vec3& position, float height = 5.0f, float radius = 0.3f);
+    Rock* AddRock(const glm::vec3& position, float size = 1.0f, float irregularity = 0.3f);
+
 private:
     void ScanTextureDirectory(const std::string& textureDir);
 
     Terrain m_Terrain;
+    Skybox m_Skybox;
+    std::vector<std::shared_ptr<WorldObject>> m_Objects;
     std::vector<std::string> m_TexturePaths;
     std::vector<std::string> m_TextureNames;
     int m_CurrentTextureIndex;
