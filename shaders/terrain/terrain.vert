@@ -13,9 +13,17 @@ uniform mat4 u_View;
 uniform mat4 u_Projection;
 
 void main() {
-    v_FragPos = vec3(u_Model * vec4(a_Position, 1.0));
-    v_Normal = mat3(transpose(inverse(u_Model))) * a_Normal;
+    // Transform position to world space
+    vec4 worldPos = u_Model * vec4(a_Position, 1.0);
+    v_FragPos = worldPos.xyz;
+    
+    // Transform normal to world space
+    mat3 normalMatrix = mat3(transpose(inverse(u_Model)));
+    v_Normal = normalize(normalMatrix * a_Normal);
+    
+    // Pass texture coordinates
     v_TexCoord = a_TexCoord;
-
-    gl_Position = u_Projection * u_View * u_Model * vec4(a_Position, 1.0);
+    
+    // Transform to clip space
+    gl_Position = u_Projection * u_View * worldPos;
 }

@@ -15,12 +15,15 @@ public:
     ~World();
 
     void Initialize(const std::string& textureDir = "assets/textures/lands/");
+    void InitializeGL();  // Call after GL context is ready to create terrain mesh
     void LoadTextures();  // Call this when GL context is ready
 
     void SetCurrentTexture(int index);
     void NextTexture();
     void PreviousTexture();
     void CycleTexture(int direction); // direction: 1 for next, -1 for previous
+
+    bool IsTexturesLoaded() const { return m_TexturesLoaded; }
 
     Terrain& GetTerrain() { return m_Terrain; }
     const Terrain& GetTerrain() const { return m_Terrain; }

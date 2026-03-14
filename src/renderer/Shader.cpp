@@ -11,7 +11,28 @@ Shader::Shader(const std::string& vertexSrc, const std::string& fragmentSrc) {
 }
 
 Shader::~Shader() {
-    glDeleteProgram(m_RendererID);
+    if (m_RendererID != 0) {
+        glDeleteProgram(m_RendererID);
+    }
+}
+
+Shader::Shader(Shader&& other) noexcept
+    : m_RendererID(other.m_RendererID), m_UniformLocationCache(std::move(other.m_UniformLocationCache)) {
+    other.m_RendererID = 0;
+}
+
+Shader& Shader::operator=(Shader&& other) noexcept {
+    if (this != &other) {
+        if (m_RendererID != 0) {
+            glDeleteProgram(m_RendererID);
+        }
+
+        m_RendererID = other.m_RendererID;
+        m_UniformLocationCache = std::move(other.m_UniformLocationCache);
+        
+        other.m_RendererID = 0;
+    }
+    return *this;
 }
 
 void Shader::Bind() const {
@@ -56,9 +77,6 @@ int Shader::GetUniformLocation(const std::string& name) const {
     }
 
     int location = glGetUniformLocation(m_RendererID, name.c_str());
-    if (location == -1) {
-        std::cout << "Warning: Uniform '" << name << "' does not exist" << std::endl;
-    }
     m_UniformLocationCache[name] = location;
     return location;
 }

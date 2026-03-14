@@ -25,27 +25,30 @@ void Constraint::UpdateRestLength() {
 
 void Constraint::Resolve() {
     if (!p1 || !p2) return;
+    
+    // Skip if both are pinned - optimization
     if (p1->isPinned && p2->isPinned) return;
 
     glm::vec3 delta = p2->position - p1->position;
+    
+    // Optimization: Calculate length only once
     float currentLength = glm::length(delta);
     
-    if (currentLength < glm::epsilon<float>()) return;
+    // Stability: Use a slightly larger epsilon
+    if (currentLength < 0.0001f) return;
 
-    glm::vec3 direction = delta / currentLength;
-    float displacement = (currentLength - restLength) * stiffness;
+    // Displacement ratio
+    float diff = (currentLength - restLength) / currentLength;
+    glm::vec3 correction = delta * diff * stiffness;
 
     // Apply corrections based on pinning state
     if (!p1->isPinned && !p2->isPinned) {
-        // Both particles can move - split the correction
-        p1->position += direction * displacement * 0.5f;
-        p2->position -= direction * displacement * 0.5f;
+        p1->position += correction * 0.5f;
+        p2->position -= correction * 0.5f;
     } else if (!p1->isPinned) {
-        // Only p1 can move
-        p1->position += direction * displacement;
+        p1->position += correction;
     } else if (!p2->isPinned) {
-        // Only p2 can move
-        p2->position -= direction * displacement;
+        p2->position -= correction;
     }
 }
 

@@ -30,6 +30,12 @@ void World::Initialize(const std::string& textureDir) {
     std::cout << "Textures will be loaded on first render call" << std::endl;
 }
 
+void World::InitializeGL() {
+    // Initialize terrain mesh (OpenGL buffers)
+    m_Terrain.InitializeMesh();
+    std::cout << "World OpenGL initialization complete" << std::endl;
+}
+
 void World::LoadTextures() {
     if (m_TexturesLoaded || m_TexturePaths.empty()) {
         return;

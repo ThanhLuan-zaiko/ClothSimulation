@@ -4,15 +4,17 @@
 #include <glm/gtc/noise.hpp>
 #include <iostream>
 #include <cmath>
+#include <utility>
 
 namespace cloth {
 
 Terrain::Terrain(float width, float depth, int segments, float textureTiling)
-    : m_VAO(0), m_VBO(0), m_EBO(0), m_Width(width), m_Depth(depth), m_Segments(segments), 
+    : m_VAO(0), m_VBO(0), m_EBO(0), m_MeshInitialized(false),
+      m_Width(width), m_Depth(depth), m_Segments(segments),
       m_TextureTiling(textureTiling), m_HeightScale(1.0f), m_Wireframe(false),
       m_HeightmapType(HeightmapType::Flat), m_HeightAmplitude(2.0f), m_HeightFrequency(0.5f) {
+    // Generate mesh data (CPU-side), but don't create OpenGL buffers yet
     GenerateMesh(width, depth, segments);
-    SetupBuffers();
 }
 
 Terrain::~Terrain() {
@@ -21,6 +23,15 @@ Terrain::~Terrain() {
         glDeleteBuffers(1, &m_VBO);
         glDeleteBuffers(1, &m_EBO);
     }
+}
+
+void Terrain::InitializeMesh() {
+    if (m_MeshInitialized) {
+        return;  // Already initialized
+    }
+    SetupBuffers();
+    m_MeshInitialized = true;
+    std::cout << "Terrain OpenGL buffers created (VAO=" << m_VAO << ")" << std::endl;
 }
 
 float Terrain::CalculateHeight(float x, float z) {
@@ -159,12 +170,12 @@ void Terrain::SetupBuffers() {
 }
 
 void Terrain::LoadTexture(const std::string& path) {
-    m_Texture = Texture(path);
+    m_Texture = std::move(Texture(path));
     m_TexturePath = path;
 }
 
-void Terrain::SetTexture(const Texture& texture) {
-    m_Texture = texture;
+void Terrain::SetTexture(Texture&& texture) {
+    m_Texture = std::move(texture);
 }
 
 void Terrain::BindTexture(unsigned int slot) const {
@@ -176,43 +187,17 @@ void Terrain::UnbindTexture() const {
 }
 
 void Terrain::Draw(const Shader& shader) const {
-    // Debug output
-    static bool firstDraw = true;
-    if (firstDraw) {
-        std::cout << "Terrain::Draw - Texture ID: " << m_Texture.GetID()
-                  << ", Size: " << m_Texture.GetWidth() << "x" << m_Texture.GetHeight()
-                  << ", VAO: " << m_VAO << std::endl;
-        firstDraw = false;
-    }
+    if (!m_MeshInitialized) return;
 
-    GLenum err;
+    // Set texture uniform
+    shader.SetInt("u_TerrainTexture", 0);
 
     // Bind texture to unit 0
     glActiveTexture(GL_TEXTURE0);
-    err = glGetError();
-    if (err != GL_NO_ERROR) std::cerr << "Error after glActiveTexture: " << err << std::endl;
-
     BindTexture(0);
-    err = glGetError();
-    if (err != GL_NO_ERROR) std::cerr << "Error after glBindTexture: " << err << std::endl;
 
-    // Bind VAO and re-enable attributes to be safe
+    // Bind VAO
     glBindVertexArray(m_VAO);
-    err = glGetError();
-    if (err != GL_NO_ERROR) std::cerr << "Error after glBindVertexArray: " << err << std::endl;
-
-    // Re-enable vertex attributes (in case they were disabled)
-    glEnableVertexAttribArray(0);
-    err = glGetError();
-    if (err != GL_NO_ERROR) std::cerr << "Error after glEnableVertexAttribArray(0): " << err << std::endl;
-
-    glEnableVertexAttribArray(1);
-    err = glGetError();
-    if (err != GL_NO_ERROR) std::cerr << "Error after glEnableVertexAttribArray(1): " << err << std::endl;
-
-    glEnableVertexAttribArray(2);
-    err = glGetError();
-    if (err != GL_NO_ERROR) std::cerr << "Error after glEnableVertexAttribArray(2): " << err << std::endl;
 
     // Wireframe mode
     if (m_Wireframe) {
@@ -221,8 +206,6 @@ void Terrain::Draw(const Shader& shader) const {
 
     glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(m_Indices.size()),
                    GL_UNSIGNED_INT, 0);
-    err = glGetError();
-    if (err != GL_NO_ERROR) std::cerr << "Error after glDrawElements: " << err << std::endl;
 
     // Reset polygon mode
     if (m_Wireframe) {
@@ -233,10 +216,22 @@ void Terrain::Draw(const Shader& shader) const {
 }
 
 void Terrain::RegenerateMesh() {
-    GenerateMesh(m_Width, m_Depth, m_Segments);
+    if (!m_MeshInitialized) {
+        return;  // Can't regenerate if not initialized yet
+    }
     
+    GenerateMesh(m_Width, m_Depth, m_Segments);
+
+    // Update VBO with new vertex data
     glBindBuffer(GL_ARRAY_BUFFER, m_VBO);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, m_Vertices.size() * sizeof(Vertex), m_Vertices.data());
+    glBufferData(GL_ARRAY_BUFFER, m_Vertices.size() * sizeof(Vertex),
+                 m_Vertices.data(), GL_STATIC_DRAW);
+
+    // Update EBO with new index data
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_EBO);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, m_Indices.size() * sizeof(unsigned int),
+                 m_Indices.data(), GL_STATIC_DRAW);
+
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 

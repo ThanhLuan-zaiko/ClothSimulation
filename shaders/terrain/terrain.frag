@@ -9,18 +9,12 @@ out vec4 out_Color;
 uniform sampler2D u_TerrainTexture;
 
 void main() {
-    // Debug: Show texture coordinates as color
-    // Red = X coordinate, Green = Y coordinate
-    // This will show if texture coordinates are correct
-    
+    // Sample terrain texture
     vec3 texColor = texture(u_TerrainTexture, v_TexCoord).rgb;
     
-    // If texture is black, show coordinate colors instead
-    float brightness = dot(texColor, vec3(0.333));
-    if (brightness < 0.01) {
-        // Texture sampled as black - show coordinates as debug
-        out_Color = vec4(v_TexCoord.x, v_TexCoord.y, 0.0, 1.0);
-    } else {
-        out_Color = vec4(texColor, 1.0);
-    }
+    // Simple ambient lighting based on normal (facing up = brighter)
+    float ambient = 0.5 + 0.5 * v_Normal.y;
+    vec3 finalColor = texColor * ambient;
+    
+    out_Color = vec4(finalColor, 1.0);
 }

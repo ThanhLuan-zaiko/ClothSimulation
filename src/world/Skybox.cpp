@@ -4,6 +4,8 @@
 #include <iostream>
 #include <cmath>
 #include <filesystem>
+#include <vector>
+#include <glm/gtc/constants.hpp>
 
 namespace cloth {
 
@@ -31,62 +33,56 @@ void Skybox::Initialize() {
 }
 
 void Skybox::SetupBuffers() {
-    float skyboxVertices[] = {
-        // Positions          
-        -1.0f,  1.0f, -1.0f,
-        -1.0f, -1.0f, -1.0f,
-         1.0f, -1.0f, -1.0f,
-         1.0f, -1.0f, -1.0f,
-         1.0f,  1.0f, -1.0f,
-        -1.0f,  1.0f, -1.0f,
-
-        -1.0f, -1.0f,  1.0f,
-        -1.0f, -1.0f, -1.0f,
-        -1.0f,  1.0f, -1.0f,
-        -1.0f,  1.0f, -1.0f,
-        -1.0f,  1.0f,  1.0f,
-        -1.0f, -1.0f,  1.0f,
-
-         1.0f, -1.0f, -1.0f,
-         1.0f, -1.0f,  1.0f,
-         1.0f,  1.0f,  1.0f,
-         1.0f,  1.0f,  1.0f,
-         1.0f,  1.0f, -1.0f,
-         1.0f, -1.0f, -1.0f,
-
-        -1.0f, -1.0f,  1.0f,
-        -1.0f,  1.0f,  1.0f,
-         1.0f,  1.0f,  1.0f,
-         1.0f,  1.0f,  1.0f,
-         1.0f, -1.0f,  1.0f,
-        -1.0f, -1.0f,  1.0f,
-
-        -1.0f,  1.0f, -1.0f,
-         1.0f,  1.0f, -1.0f,
-         1.0f,  1.0f,  1.0f,
-         1.0f,  1.0f,  1.0f,
-        -1.0f,  1.0f,  1.0f,
-        -1.0f,  1.0f, -1.0f,
-
-        -1.0f, -1.0f, -1.0f,
-        -1.0f, -1.0f,  1.0f,
-         1.0f, -1.0f, -1.0f,
-         1.0f, -1.0f, -1.0f,
-        -1.0f, -1.0f,  1.0f,
-         1.0f, -1.0f,  1.0f
-    };
+    // Create a large sphere for skybox instead of cube
+    const int rings = 32;
+    const int sectors = 64;
+    const float radius = 50.0f;
+    
+    std::vector<float> vertices;
+    
+    for (int r = 0; r < rings; r++) {
+        for (int s = 0; s < sectors; s++) {
+            float y1 = cos(float(r) / rings * 3.14159f);
+            float x1 = sin(float(r) / rings * 3.14159f) * cos(float(s) / sectors * 2.0f * 3.14159f);
+            float z1 = sin(float(r) / rings * 3.14159f) * sin(float(s) / sectors * 2.0f * 3.14159f);
+            
+            float y2 = cos(float(r + 1) / rings * 3.14159f);
+            float x2 = sin(float(r + 1) / rings * 3.14159f) * cos(float(s) / sectors * 2.0f * 3.14159f);
+            float z2 = sin(float(r + 1) / rings * 3.14159f) * sin(float(s) / sectors * 2.0f * 3.14159f);
+            
+            float y3 = cos(float(r + 1) / rings * 3.14159f);
+            float x3 = sin(float(r + 1) / rings * 3.14159f) * cos(float(s + 1) / sectors * 2.0f * 3.14159f);
+            float z3 = sin(float(r + 1) / rings * 3.14159f) * sin(float(s + 1) / sectors * 2.0f * 3.14159f);
+            
+            float y4 = cos(float(r) / rings * 3.14159f);
+            float x4 = sin(float(r) / rings * 3.14159f) * cos(float(s + 1) / sectors * 2.0f * 3.14159f);
+            float z4 = sin(float(r) / rings * 3.14159f) * sin(float(s + 1) / sectors * 2.0f * 3.14159f);
+            
+            // First triangle
+            vertices.push_back(x1 * radius); vertices.push_back(y1 * radius); vertices.push_back(z1 * radius);
+            vertices.push_back(x3 * radius); vertices.push_back(y3 * radius); vertices.push_back(z3 * radius);
+            vertices.push_back(x2 * radius); vertices.push_back(y2 * radius); vertices.push_back(z2 * radius);
+            
+            // Second triangle
+            vertices.push_back(x1 * radius); vertices.push_back(y1 * radius); vertices.push_back(z1 * radius);
+            vertices.push_back(x4 * radius); vertices.push_back(y4 * radius); vertices.push_back(z4 * radius);
+            vertices.push_back(x3 * radius); vertices.push_back(y3 * radius); vertices.push_back(z3 * radius);
+        }
+    }
 
     glGenVertexArrays(1, &m_VAO);
     glGenBuffers(1, &m_VBO);
 
     glBindVertexArray(m_VAO);
     glBindBuffer(GL_ARRAY_BUFFER, m_VBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(skyboxVertices), skyboxVertices, GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float), vertices.data(), GL_STATIC_DRAW);
 
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
 
     glBindVertexArray(0);
+    
+    std::cout << "Skybox sphere created with " << vertices.size() / 3 << " vertices" << std::endl;
 }
 
 void Skybox::LoadTextures(const std::string& folderPath) {
@@ -131,44 +127,50 @@ void Skybox::LoadTextures(const std::string& folderPath) {
 }
 
 void Skybox::CreateGradientSky() {
-    // Create a simple gradient cubemap
+    // Create cubemap with DISTINCT colors for each face (for testing)
     glGenTextures(1, &m_CubemapTexture);
     glBindTexture(GL_TEXTURE_CUBE_MAP, m_CubemapTexture);
-    
+
     int width = 512;
     int height = 512;
-    
-    // Create gradient colors
-    std::vector<unsigned char> pixels(width * height * 3);
-    
-    for (int y = 0; y < height; y++) {
-        for (int x = 0; x < width; x++) {
-            float t = static_cast<float>(y) / static_cast<float>(height);
-            
-            // Gradient from light blue (top) to darker blue (bottom)
-            unsigned char r = static_cast<unsigned char>(135.0f * (1.0f - t) + 200.0f * t);
-            unsigned char g = static_cast<unsigned char>(206.0f * (1.0f - t) + 230.0f * t);
-            unsigned char b = static_cast<unsigned char>(235.0f * (1.0f - t) + 255.0f * t);
-            
-            int idx = (y * width + x) * 3;
-            pixels[idx] = r;
-            pixels[idx + 1] = g;
-            pixels[idx + 2] = b;
+
+    // Generate each face with a UNIQUE color
+    for (int face = 0; face < 6; face++) {
+        std::vector<unsigned char> pixels(width * height * 3);
+
+        float r, g, b;
+        switch (face) {
+            case 0: // GL_TEXTURE_CUBE_MAP_POSITIVE_X (+X) = RIGHT
+                r = 1.0f; g = 0.0f; b = 0.0f; break;  // RED
+            case 1: // GL_TEXTURE_CUBE_MAP_NEGATIVE_X (-X) = LEFT
+                r = 0.0f; g = 1.0f; b = 0.0f; break;  // GREEN
+            case 2: // GL_TEXTURE_CUBE_MAP_POSITIVE_Y (+Y) = TOP/UP
+                r = 0.0f; g = 0.0f; b = 1.0f; break;  // BLUE
+            case 3: // GL_TEXTURE_CUBE_MAP_NEGATIVE_Y (-Y) = BOTTOM/DOWN
+                r = 1.0f; g = 1.0f; b = 0.0f; break;  // YELLOW
+            case 4: // GL_TEXTURE_CUBE_MAP_POSITIVE_Z (+Z) = FORWARD
+                r = 1.0f; g = 0.0f; b = 1.0f; break;  // MAGENTA
+            case 5: // GL_TEXTURE_CUBE_MAP_NEGATIVE_Z (-Z) = BACKWARD
+                r = 0.0f; g = 1.0f; b = 1.0f; break;  // CYAN
+            default:
+                r = 1.0f; g = 1.0f; b = 1.0f; break;
         }
+
+        // Fill all pixels with the same color
+        for (int i = 0; i < width * height; i++) {
+            pixels[i * 3] = static_cast<unsigned char>(r * 255.0f);
+            pixels[i * 3 + 1] = static_cast<unsigned char>(g * 255.0f);
+            pixels[i * 3 + 2] = static_cast<unsigned char>(b * 255.0f);
+        }
+
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, pixels.data());
     }
-    
-    // Set all 6 faces with the same gradient
-    for (unsigned int i = 0; i < 6; i++) {
-        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, pixels.data());
-    }
-    
+
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-    
-    std::cout << "Gradient skybox created" << std::endl;
 }
 
 void Skybox::LoadCubemap(const std::vector<std::string>& faces) {
@@ -204,7 +206,9 @@ void Skybox::Draw() const {
     glDepthFunc(GL_LEQUAL);  // Change depth function so skybox passes depth test
     
     glBindVertexArray(m_VAO);
-    glDrawArrays(GL_TRIANGLES, 0, 36);
+    // Draw all vertices generated in SetupBuffers
+    // 32 rings * 64 sectors * 2 triangles * 3 vertices = 12288 vertices
+    glDrawArrays(GL_TRIANGLES, 0, 12288); 
     glBindVertexArray(0);
     
     glDepthFunc(GL_LESS);  // Reset depth function

@@ -21,6 +21,29 @@ Texture::~Texture() {
     }
 }
 
+Texture::Texture(Texture&& other) noexcept
+    : m_RendererID(other.m_RendererID), m_Width(other.m_Width), 
+      m_Height(other.m_Height), m_Channels(other.m_Channels), m_Path(std::move(other.m_Path)) {
+    other.m_RendererID = 0;
+}
+
+Texture& Texture::operator=(Texture&& other) noexcept {
+    if (this != &other) {
+        if (m_RendererID != 0) {
+            glDeleteTextures(1, &m_RendererID);
+        }
+
+        m_RendererID = other.m_RendererID;
+        m_Width = other.m_Width;
+        m_Height = other.m_Height;
+        m_Channels = other.m_Channels;
+        m_Path = std::move(other.m_Path);
+
+        other.m_RendererID = 0;
+    }
+    return *this;
+}
+
 void Texture::Bind(unsigned int slot) const {
     glActiveTexture(GL_TEXTURE0 + slot);
     glBindTexture(GL_TEXTURE_2D, m_RendererID);
@@ -51,10 +74,8 @@ void Texture::LoadTexture(const std::string& path) {
         format = GL_RGBA;
 
     glGenTextures(1, &m_RendererID);
-    std::cout << "[DEBUG] glGenTextures created ID: " << m_RendererID << std::endl;
-    
+
     glBindTexture(GL_TEXTURE_2D, m_RendererID);
-    std::cout << "[DEBUG] After glBindTexture, glIsTexture = " << (int)glIsTexture(m_RendererID) << std::endl;
 
     // Set texture parameters
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
@@ -66,9 +87,6 @@ void Texture::LoadTexture(const std::string& path) {
     glGenerateMipmap(GL_TEXTURE_2D);
 
     stbi_image_free(data);
-
-    std::cout << "[DEBUG] Final glIsTexture(" << m_RendererID << ") = " << (int)glIsTexture(m_RendererID) << std::endl;
-    std::cout << "Texture loaded: " << path << " (" << m_Width << "x" << m_Height << "), ID: " << m_RendererID << std::endl;
 }
 
 Texture Texture::CreateFromFile(const std::string& path) {

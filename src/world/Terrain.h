@@ -14,8 +14,12 @@ public:
     Terrain(float width = 50.0f, float depth = 50.0f, int segments = 50, float textureTiling = 5.0f);
     ~Terrain();
 
+    // Deferred initialization - call after GL context is ready
+    void InitializeMesh();
+    bool IsMeshInitialized() const { return m_MeshInitialized; }
+
     void LoadTexture(const std::string& path);
-    void SetTexture(const Texture& texture);
+    void SetTexture(Texture&& texture);
     void BindTexture(unsigned int slot = 0) const;
     void UnbindTexture() const;
 
@@ -33,10 +37,10 @@ public:
     // Heightmap controls
     void SetHeightScale(float scale) { m_HeightScale = scale; RegenerateMesh(); }
     float GetHeightScale() const { return m_HeightScale; }
-    
+
     void SetWireframe(bool wireframe) { m_Wireframe = wireframe; }
     bool IsWireframe() const { return m_Wireframe; }
-    
+
     // Generate height using different methods
     void GenerateFlatHeightmap();
     void GenerateNoiseHeightmap(float amplitude = 2.0f, float frequency = 0.5f);
@@ -52,6 +56,7 @@ private:
     unsigned int m_VAO;
     unsigned int m_VBO;
     unsigned int m_EBO;
+    bool m_MeshInitialized;
 
     Texture m_Texture;
     std::string m_TexturePath;

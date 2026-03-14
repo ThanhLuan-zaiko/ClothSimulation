@@ -82,6 +82,8 @@
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)Libraries\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -100,6 +102,7 @@
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)Libraries\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -146,6 +149,8 @@
   <ItemGroup>
     <ClCompile Include="glad.c" />
     <ClCompile Include="src\main.cpp" />
+    <ClCompile Include="src\InputHandler.cpp" />
+    <ClCompile Include="src\SceneRenderer.cpp" />
     <ClCompile Include="src\core\Application.cpp" />
     <ClCompile Include="src\core\Window.cpp" />
     <ClCompile Include="src\core\Input.cpp" />
@@ -162,11 +167,16 @@
     <ClCompile Include="src\world\World.cpp" />
     <ClCompile Include="src\world\Skybox.cpp" />
     <ClCompile Include="src\world\WorldObject.cpp" />
+    <ClCompile Include="src\world\Sphere.cpp" />
+    <ClCompile Include="src\renderer\ReflectionCubemap.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\core\Application.h" />
     <ClInclude Include="src\core\Window.h" />
     <ClInclude Include="src\core\Input.h" />
+    <ClInclude Include="src\AppState.h" />
+    <ClInclude Include="src\InputHandler.h" />
+    <ClInclude Include="src\SceneRenderer.h" />
     <ClInclude Include="src\renderer\Renderer.h" />
     <ClInclude Include="src\renderer\Shader.h" />
     <ClInclude Include="src\renderer\Camera.h" />
@@ -181,6 +191,8 @@
     <ClInclude Include="src\utils\Types.h" />
     <ClInclude Include="src\world\Terrain.h" />
     <ClInclude Include="src\world\World.h" />
+    <ClInclude Include="src\world\Sphere.h" />
+    <ClInclude Include="src\renderer\ReflectionCubemap.h" />
   </ItemGroup>
 
   <!-- Shaders for Solution Explorer display -->
@@ -192,10 +204,16 @@
     <None Include="shaders\cloth\cloth.frag" />
     <None Include="shaders\basic\basic.vert" />
     <None Include="shaders\basic\basic.frag" />
+    <None Include="shaders\sphere\sphere.vert" />
+    <None Include="shaders\sphere\sphere.frag" />
   </ItemGroup>
 
   <!-- Copy shaders to output directory -->
   <Target Name="CopyShaders" AfterTargets="Build">
+    <MakeDir Directories="$(OutDir)shaders\terrain" />
+    <MakeDir Directories="$(OutDir)shaders\cloth" />
+    <MakeDir Directories="$(OutDir)shaders\basic" />
+    <MakeDir Directories="$(OutDir)shaders\sphere" />
     <Copy SourceFiles="$(ProjectDir)shaders\terrain\terrain.vert" DestinationFiles="$(OutDir)shaders\terrain\terrain.vert" />
     <Copy SourceFiles="$(ProjectDir)shaders\terrain\terrain.frag" DestinationFiles="$(OutDir)shaders\terrain\terrain.frag" />
     <Copy SourceFiles="$(ProjectDir)shaders\terrain\terrain_test.frag" DestinationFiles="$(OutDir)shaders\terrain\terrain_test.frag" />
@@ -203,6 +221,8 @@
     <Copy SourceFiles="$(ProjectDir)shaders\cloth\cloth.frag" DestinationFiles="$(OutDir)shaders\cloth\cloth.frag" />
     <Copy SourceFiles="$(ProjectDir)shaders\basic\basic.vert" DestinationFiles="$(OutDir)shaders\basic\basic.vert" />
     <Copy SourceFiles="$(ProjectDir)shaders\basic\basic.frag" DestinationFiles="$(OutDir)shaders\basic\basic.frag" />
+    <Copy SourceFiles="$(ProjectDir)shaders\sphere\sphere.vert" DestinationFiles="$(OutDir)shaders\sphere\sphere.vert" />
+    <Copy SourceFiles="$(ProjectDir)shaders\sphere\sphere.frag" DestinationFiles="$(OutDir)shaders\sphere\sphere.frag" />
   </Target>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

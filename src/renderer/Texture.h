@@ -11,6 +11,14 @@ public:
     Texture(const std::string& path);
     ~Texture();
 
+    // Prevent copying to avoid double-deletion of OpenGL resources
+    Texture(const Texture&) = delete;
+    Texture& operator=(const Texture&) = delete;
+
+    // Support moving for resource transfer
+    Texture(Texture&& other) noexcept;
+    Texture& operator=(Texture&& other) noexcept;
+
     void Bind(unsigned int slot = 0) const;
     void Unbind() const;
 

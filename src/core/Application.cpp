@@ -40,8 +40,8 @@ void Application::Run() {
         m_DeltaTime = currentFrame - m_LastFrameTime;
         m_LastFrameTime = currentFrame;
 
-        // Clear buffers - use lighter background to see terrain better
-        glClearColor(0.5f, 0.7f, 1.0f, 1.0f);  // Light blue sky
+        // Clear buffers - dark blue background
+        glClearColor(0.1f, 0.1f, 0.2f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         // Update

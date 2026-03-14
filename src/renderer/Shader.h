@@ -12,6 +12,14 @@ public:
     Shader(const std::string& vertexSrc, const std::string& fragmentSrc);
     ~Shader();
 
+    // Prevent copying to avoid double-deletion of OpenGL resources
+    Shader(const Shader&) = delete;
+    Shader& operator=(const Shader&) = delete;
+
+    // Support moving for resource transfer
+    Shader(Shader&& other) noexcept;
+    Shader& operator=(Shader&& other) noexcept;
+
     void Bind() const;
     void Unbind() const;
 
