@@ -80,6 +80,18 @@ int main() {
         GetAssetPath("shaders/terrain/terrain.frag")
     );
 
+    // Load sphere shader from file
+    state.sphereShader = Shader::CreateFromFile(
+        GetAssetPath("shaders/sphere/sphere.vert"),
+        GetAssetPath("shaders/sphere/sphere.frag")
+    );
+
+    // Load skybox shader from file
+    state.skyboxShader = Shader::CreateFromFile(
+        GetAssetPath("shaders/skybox/skybox.vert"),
+        GetAssetPath("shaders/skybox/skybox.frag")
+    );
+
     // Initialize world (scan textures, create skybox)
     state.world.Initialize(GetAssetPath("assets/textures/lands/"));
 
@@ -90,15 +102,15 @@ int main() {
     state.world.GetTerrain().GenerateMountainHeightmap(3.0f);
     state.world.GetTerrain().SetHeightScale(1.0f);
 
-    // Create 3 cloths centered on the terrain to drape over the mirror sphere at (0, 5, 0)
-    // Cloth 1 - Center drape
+    // Create 3 cloths precisely centered to drape over the huge mirror sphere (radius 3.0)
+    // Cloth 1 - Main drape
     ClothConfig clothConfig1;
-    clothConfig1.widthSegments = 40;
-    clothConfig1.heightSegments = 30;
-    clothConfig1.segmentLength = 0.12f;
-    clothConfig1.startX = -2.4f; // Centered: - (40*0.12)/2
-    clothConfig1.startY = 7.5f;  // Raised to drape over sphere at 5.0f
-    clothConfig1.startZ = -1.8f; // Centered: - (30*0.12)/2
+    clothConfig1.widthSegments = 50;
+    clothConfig1.heightSegments = 50;
+    clothConfig1.segmentLength = 0.15f;
+    clothConfig1.startX = -3.75f; // Centered
+    clothConfig1.startY = 10.0f; // High enough to clear the sphere
+    clothConfig1.startZ = -3.75f; // Centered
     clothConfig1.pinTopLeft = false;
     clothConfig1.pinTopRight = false;
 
@@ -107,14 +119,14 @@ int main() {
     state.cloths.push_back(cloth1);
     state.clothMeshes.push_back(clothMesh1);
 
-    // Cloth 2 - Offset drape (for variety)
+    // Cloth 2 - Offset and higher
     ClothConfig clothConfig2;
-    clothConfig2.widthSegments = 30;
-    clothConfig2.heightSegments = 30;
-    clothConfig2.segmentLength = 0.12f;
-    clothConfig2.startX = -4.0f;
-    clothConfig2.startY = 8.0f;
-    clothConfig2.startZ = -1.8f;
+    clothConfig2.widthSegments = 40;
+    clothConfig2.heightSegments = 40;
+    clothConfig2.segmentLength = 0.15f;
+    clothConfig2.startX = -3.0f;
+    clothConfig2.startY = 12.0f; 
+    clothConfig2.startZ = -3.0f;
     clothConfig2.pinTopLeft = false;
     clothConfig2.pinTopRight = false;
 
@@ -123,14 +135,14 @@ int main() {
     state.cloths.push_back(cloth2);
     state.clothMeshes.push_back(clothMesh2);
 
-    // Cloth 3 - Offset drape (for variety)
+    // Cloth 3 - Highest
     ClothConfig clothConfig3;
-    clothConfig3.widthSegments = 30;
-    clothConfig3.heightSegments = 30;
-    clothConfig3.segmentLength = 0.12f;
-    clothConfig3.startX = 0.5f;
-    clothConfig3.startY = 8.0f;
-    clothConfig3.startZ = -1.8f;
+    clothConfig3.widthSegments = 40;
+    clothConfig3.heightSegments = 40;
+    clothConfig3.segmentLength = 0.15f;
+    clothConfig3.startX = -3.0f;
+    clothConfig3.startY = 14.0f; 
+    clothConfig3.startZ = -3.0f;
     clothConfig3.pinTopLeft = false;
     clothConfig3.pinTopRight = false;
 

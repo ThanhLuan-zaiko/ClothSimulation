@@ -20,10 +20,11 @@ void Cloth::CreateParticles() {
     
     for (int y = 0; y <= m_Config.heightSegments; y++) {
         for (int x = 0; x <= m_Config.widthSegments; x++) {
+            // Create cloth horizontally in XZ plane
             glm::vec3 pos(
                 m_Config.startX + x * m_Config.segmentLength,
-                m_Config.startY - y * m_Config.segmentLength,
-                m_Config.startZ
+                m_Config.startY, // Constant height
+                m_Config.startZ + y * m_Config.segmentLength // Expand along Z
             );
 
             // Pin corners based on config

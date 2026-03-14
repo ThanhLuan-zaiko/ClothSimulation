@@ -134,29 +134,20 @@ void Skybox::CreateGradientSky() {
     int width = 512;
     int height = 512;
 
-    // Generate each face with a UNIQUE color
+    // Generate each face with a consistent Sky Blue color
     for (int face = 0; face < 6; face++) {
         std::vector<unsigned char> pixels(width * height * 3);
 
         float r, g, b;
-        switch (face) {
-            case 0: // GL_TEXTURE_CUBE_MAP_POSITIVE_X (+X) = RIGHT
-                r = 1.0f; g = 0.0f; b = 0.0f; break;  // RED
-            case 1: // GL_TEXTURE_CUBE_MAP_NEGATIVE_X (-X) = LEFT
-                r = 0.0f; g = 1.0f; b = 0.0f; break;  // GREEN
-            case 2: // GL_TEXTURE_CUBE_MAP_POSITIVE_Y (+Y) = TOP/UP
-                r = 0.0f; g = 0.0f; b = 1.0f; break;  // BLUE
-            case 3: // GL_TEXTURE_CUBE_MAP_NEGATIVE_Y (-Y) = BOTTOM/DOWN
-                r = 1.0f; g = 1.0f; b = 0.0f; break;  // YELLOW
-            case 4: // GL_TEXTURE_CUBE_MAP_POSITIVE_Z (+Z) = FORWARD
-                r = 1.0f; g = 0.0f; b = 1.0f; break;  // MAGENTA
-            case 5: // GL_TEXTURE_CUBE_MAP_NEGATIVE_Z (-Z) = BACKWARD
-                r = 0.0f; g = 1.0f; b = 1.0f; break;  // CYAN
-            default:
-                r = 1.0f; g = 1.0f; b = 1.0f; break;
+        if (face == 2) { // TOP
+            r = 0.5f; g = 0.7f; b = 1.0f; 
+        } else if (face == 3) { // BOTTOM
+            r = 0.7f; g = 0.8f; b = 0.9f;
+        } else { // SIDES
+            r = 0.6f; g = 0.75f; b = 1.0f;
         }
 
-        // Fill all pixels with the same color
+        // Fill all pixels with the selected blue
         for (int i = 0; i < width * height; i++) {
             pixels[i * 3] = static_cast<unsigned char>(r * 255.0f);
             pixels[i * 3 + 1] = static_cast<unsigned char>(g * 255.0f);

@@ -23,7 +23,8 @@ Sphere::~Sphere() {
 }
 
 void Sphere::Initialize() {
-    if (m_Initialized) return;
+    // If already initialized and buffers are valid, don't re-initialize
+    if (m_Initialized && m_VAO != 0) return;
 
     GenerateMesh();
     SetupBuffers();
@@ -33,6 +34,7 @@ void Sphere::Initialize() {
 void Sphere::SetupBuffers() {
     if (m_Vertices.empty() || m_Indices.empty()) return;
 
+    // Create buffers only if they don't exist
     if (m_VAO == 0) {
         glGenVertexArrays(1, &m_VAO);
         glGenBuffers(1, &m_VBO);

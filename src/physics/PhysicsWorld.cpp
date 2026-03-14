@@ -17,6 +17,9 @@ void PhysicsWorld::Update(float deltaTime) {
     for (Particle* particle : m_Particles) {
         if (!particle->isPinned) {
             particle->ApplyForce(m_Gravity * particle->mass);
+            
+            // Calculate acceleration: a = F / m
+            particle->acceleration = particle->force / particle->mass;
         }
     }
 
@@ -24,6 +27,24 @@ void PhysicsWorld::Update(float deltaTime) {
     for (Particle* particle : m_Particles) {
         particle->Update(deltaTime);
         particle->ResetForce();
+
+        // Sphere collision
+        if (m_HasSphere && !particle->isPinned) {
+            glm::vec3 diff = particle->position - m_SphereCenter;
+            float dist = glm::length(diff);
+            float minRadius = m_SphereRadius + 0.02f; // Slight offset for better visuals
+
+            if (dist < minRadius) {
+                // Resolve collision: push particle out of sphere
+                glm::vec3 normal = diff / dist;
+                particle->position = m_SphereCenter + normal * minRadius;
+                
+                // Friction-like behavior: damp movement along the surface
+                // For Verlet, we adjust previousPos to reduce velocity
+                glm::vec3 velocity = particle->position - particle->previousPos;
+                particle->previousPos = particle->position - velocity * 0.95f;
+            }
+        }
     }
 
     // Solve constraints multiple times for stability

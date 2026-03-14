@@ -1,122 +1,77 @@
 #include "InputHandler.h"
-#include <glm/gtc/matrix_transform.hpp>
+#include <GLFW/glfw3.h>
+#include <glm/glm.hpp>
+#include "renderer/Renderer.h" // To get LoadTerrainTexture if needed
+
+namespace cloth {
 
 void HandleInput(AppState& state, float deltaTime) {
+    // 1. Camera movement
+    float speed = 50.0f;
+    if (Input::IsKeyPressed(GLFW_KEY_LEFT_SHIFT)) speed *= 4.0f;
 
-    // Camera controls - increased base speed for faster movement
-    float baseCameraSpeed = 30.0f * deltaTime;
-    float cameraSpeed = Input::IsKeyPressed(GLFW_KEY_LEFT_SHIFT) || Input::IsKeyPressed(GLFW_KEY_RIGHT_SHIFT)
-                       ? baseCameraSpeed * 4.0f  // Sprint mode - very fast
-                       : baseCameraSpeed;
+    if (Input::IsKeyPressed(GLFW_KEY_W)) state.camera.MoveForward(deltaTime * speed);
+    if (Input::IsKeyPressed(GLFW_KEY_S)) state.camera.MoveForward(-deltaTime * speed);
+    if (Input::IsKeyPressed(GLFW_KEY_A)) state.camera.MoveRight(-deltaTime * speed);
+    if (Input::IsKeyPressed(GLFW_KEY_D)) state.camera.MoveRight(deltaTime * speed);
+    if (Input::IsKeyPressed(GLFW_KEY_E)) state.camera.MoveUp(deltaTime * speed);
+    if (Input::IsKeyPressed(GLFW_KEY_Q)) state.camera.MoveUp(-deltaTime * speed);
 
-    if (Input::IsKeyPressed(GLFW_KEY_W) || Input::IsKeyPressed(GLFW_KEY_UP)) {
-        state.camera.MoveForward(cameraSpeed);
-    }
-    if (Input::IsKeyPressed(GLFW_KEY_S) || Input::IsKeyPressed(GLFW_KEY_DOWN)) {
-        state.camera.MoveForward(-cameraSpeed);
-    }
-    if (Input::IsKeyPressed(GLFW_KEY_A) || Input::IsKeyPressed(GLFW_KEY_LEFT)) {
-        state.camera.MoveRight(-cameraSpeed);
-    }
-    if (Input::IsKeyPressed(GLFW_KEY_D) || Input::IsKeyPressed(GLFW_KEY_RIGHT)) {
-        state.camera.MoveRight(cameraSpeed);
-    }
-
-    // Camera zoom with scroll wheel - faster zoom
-    float scrollSpeed = 40.0f * deltaTime;
-    if (Input::IsKeyPressed(GLFW_KEY_EQUAL) || Input::IsKeyPressed(GLFW_KEY_PAGE_UP)) {
-        state.cameraFOV -= scrollSpeed;
-        if (state.cameraFOV < 10.0f) state.cameraFOV = 10.0f;
-    }
-    if (Input::IsKeyPressed(GLFW_KEY_MINUS) || Input::IsKeyPressed(GLFW_KEY_PAGE_DOWN)) {
-        state.cameraFOV += scrollSpeed;
-        if (state.cameraFOV > 90.0f) state.cameraFOV = 90.0f;
-    }
-
-    // Mouse look - reset position on first click to prevent jump
-    if (Input::IsMouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT) && !state.mousePressed) {
+    // 2. Mouse rotation
+    double mouseX = Input::GetMouseX();
+    double mouseY = Input::GetMouseY();
+    if (Input::IsMouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT)) {
+        if (state.mousePressed) {
+            float deltaX = static_cast<float>(mouseX - state.lastMouseX);
+            float deltaY = static_cast<float>(mouseY - state.lastMouseY);
+            state.camera.Rotate(deltaX * 0.15f, -deltaY * 0.15f);
+        }
         state.mousePressed = true;
-        state.lastMouseX = Input::GetMouseX();
-        state.lastMouseY = Input::GetMouseY();
-    }
-    if (!Input::IsMouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT)) {
+    } else {
         state.mousePressed = false;
     }
-    if (state.mousePressed) {
-        double currentX = Input::GetMouseX();
-        double currentY = Input::GetMouseY();
+    state.lastMouseX = mouseX;
+    state.lastMouseY = mouseY;
 
-        float deltaX = static_cast<float>(currentX - state.lastMouseX);
-        float deltaY = static_cast<float>(currentY - state.lastMouseY);
-
-        // Mouse sensitivity
-        state.cameraYaw += deltaX * 0.2f;
-        state.cameraPitch -= deltaY * 0.2f;
-
-        if (state.cameraPitch > 89.0f) state.cameraPitch = 89.0f;
-        if (state.cameraPitch < -89.0f) state.cameraPitch = -89.0f;
-
-        state.camera.SetRotation(glm::vec3(state.cameraYaw, state.cameraPitch, 0.0f));
-
-        state.lastMouseX = currentX;
-        state.lastMouseY = currentY;
-    }
-
-    // Reset all cloths
+    // 3. Reset cloth (Space)
     if (Input::IsKeyPressed(GLFW_KEY_SPACE)) {
-        for (auto* c : state.cloths) {
-            c->Reset();
+        for (auto* cloth : state.cloths) {
+            cloth->Reset();
         }
+        // No need to update reflection - cloth movement is already captured
     }
 
-    // Update key repeat timer
-    state.keyRepeatTimer -= deltaTime;
+    // 4. Terrain Texture Switching (T / Shift + T)
+    bool tDown = Input::IsKeyPressed(GLFW_KEY_T);
+    bool shiftDown = Input::IsKeyPressed(GLFW_KEY_LEFT_SHIFT) || Input::IsKeyPressed(GLFW_KEY_RIGHT_SHIFT);
 
-    // Terrain texture selection - FAST response (no blocking while loops)
-    bool tKeyPressed = Input::IsKeyPressed(GLFW_KEY_T);
-    bool shiftKeyPressed = Input::IsKeyPressed(GLFW_KEY_LEFT_SHIFT) || Input::IsKeyPressed(GLFW_KEY_RIGHT_SHIFT);
-
-    if (tKeyPressed && !state.lastTKeyPressed) {
-        // First press - immediate action
-        if (shiftKeyPressed) {
+    if (tDown && !state.lastTKeyPressed) {
+        if (shiftDown) {
             state.world.PreviousTexture();
         } else {
             state.world.NextTexture();
         }
-        state.reflectionNeedsUpdate = true; // Optimization: Trigger reflection update
-        state.keyRepeatTimer = state.keyRepeatDelay;
-    } else if (tKeyPressed && state.keyRepeatTimer <= 0) {
-        // Key repeat
-        if (shiftKeyPressed) {
-            state.world.PreviousTexture();
-        } else {
-            state.world.NextTexture();
-        }
-        state.reflectionNeedsUpdate = true; // Optimization: Trigger reflection update
-        state.keyRepeatTimer = state.keyRepeatDelay;
+        state.reflectionNeedsUpdate = true; // Terrain changed, need to update reflections
     }
-    state.lastTKeyPressed = tKeyPressed;
-    state.lastShiftKeyPressed = shiftKeyPressed;
+    state.lastTKeyPressed = tDown;
 
-    // Direct texture selection with number keys - FAST response
-    int textureCount = state.world.GetTextureCount();
-    for (int i = 0; i < textureCount && i < 9; ++i) {
-        bool numKeyPressed = Input::IsKeyPressed(GLFW_KEY_1 + i);
-        if (numKeyPressed && !state.lastNumberKeysPressed[i]) {
+    // 5. Direct Texture Selection (1-9)
+    for (int i = 0; i < 9; ++i) {
+        int key = GLFW_KEY_1 + i;
+        bool keyDown = Input::IsKeyPressed(key);
+        if (keyDown && !state.lastNumberKeysPressed[i]) {
             state.world.SetCurrentTexture(i);
-            state.reflectionNeedsUpdate = true; // Optimization: Trigger reflection update
-            state.keyRepeatTimer = state.keyRepeatDelay;
+            state.reflectionNeedsUpdate = true;
         }
-        state.lastNumberKeysPressed[i] = numKeyPressed;
+        state.lastNumberKeysPressed[i] = keyDown;
     }
 
-    // Toggle terrain wireframe - FAST response
-    bool fKeyPressed = Input::IsKeyPressed(GLFW_KEY_F);
-    if (fKeyPressed && !state.lastFKeyPressed) {
+    // 6. Toggle Wireframe (F)
+    bool fDown = Input::IsKeyPressed(GLFW_KEY_F);
+    if (fDown && !state.lastFKeyPressed) {
         state.world.GetTerrain().SetWireframe(!state.world.GetTerrain().IsWireframe());
     }
-    state.lastFKeyPressed = fKeyPressed;
-
-    // Update camera FOV
-    state.camera.SetFOV(state.cameraFOV);
+    state.lastFKeyPressed = fDown;
 }
+
+} // namespace cloth

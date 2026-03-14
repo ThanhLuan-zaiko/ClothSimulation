@@ -8,6 +8,8 @@
 
 namespace cloth {
 
+struct AppState;
+
 class Renderer {
 public:
     Renderer();
@@ -32,5 +34,9 @@ private:
     glm::mat4 m_ViewProjectionMatrix;
     bool m_SceneStarted;
 };
+
+// Global helper functions for texture loading
+void LoadClothTextures(AppState& state);
+void LoadTerrainTexture(AppState& state);
 
 } // namespace cloth

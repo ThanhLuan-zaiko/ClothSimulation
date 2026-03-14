@@ -1,45 +1,11 @@
 #include "SceneRenderer.h"
+#include "renderer/Renderer.h"
 #include <glad/glad.h>
 #include <stb_image.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <iostream>
 
-extern std::string GetAssetPath(const std::string& relativePath);
-
-void LoadClothTextures(AppState& state) {
-    std::vector<std::string> clothTexturePaths = {
-        GetAssetPath("assets/cloths/denim_fabric_diff_4k.jpg"),
-        GetAssetPath("assets/cloths/fabric_pattern_07_col_1_4k.png"),
-        GetAssetPath("assets/cloths/floral_jacquard_diff_4k.jpg")
-    };
-
-    for (size_t i = 0; i < clothTexturePaths.size() && i < state.clothMeshes.size(); i++) {
-        unsigned int textureID;
-        glGenTextures(1, &textureID);
-        glBindTexture(GL_TEXTURE_2D, textureID);
-
-        stbi_set_flip_vertically_on_load(1);
-        int width, height, channels;
-        unsigned char* data = stbi_load(clothTexturePaths[i].c_str(), &width, &height, &channels, 0);
-
-        if (data) {
-            GLenum format = (channels == 4) ? GL_RGBA : GL_RGB;
-            glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
-            glGenerateMipmap(GL_TEXTURE_2D);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            stbi_image_free(data);
-            std::cout << "Loaded cloth texture: " << clothTexturePaths[i] << std::endl;
-        } else {
-            std::cerr << "Failed to load cloth texture: " << clothTexturePaths[i] << std::endl;
-        }
-
-        state.clothTextures.push_back(textureID);
-    }
-    state.clothTexturesLoaded = true;
-}
+namespace cloth {
 
 void Render(AppState& state, const Application& app) {
     // Initial loading if needed
@@ -50,6 +16,9 @@ void Render(AppState& state, const Application& app) {
     if (!state.world.IsTexturesLoaded()) {
         state.world.LoadTextures();
     }
+
+    // Check and apply terrain texture changes
+    LoadTerrainTexture(state);
 
     // Get current window/viewport size
     GLint viewport[4];
@@ -63,18 +32,63 @@ void Render(AppState& state, const Application& app) {
     glm::mat4 projection = state.camera.GetProjectionMatrix();
 
     // === 1. RENDER REFLECTION CUBEMAP (Off-screen) ===
-    // OPTIMIZATION: Only update the reflection cubemap if something changed (like terrain texture)
-    // Since the terrain is static, we don't need to re-render it 6 times every frame!
-    if (state.reflectionNeedsUpdate && state.world.IsTexturesLoaded()) {
+    // Lazy update: Only update reflection when necessary
+    bool shouldUpdateReflection = false;
+    
+    // Always update on first frame
+    if (state.reflectionNeedsUpdate) {
+        shouldUpdateReflection = true;
+    } else if (state.world.IsTexturesLoaded() && state.reflectionCubemap) {
+        // Check if camera moved enough to warrant an update
+        float cameraMoveDist = glm::distance(state.camera.GetPosition(), state.lastReflectionUpdatePos);
+        if (cameraMoveDist > state.reflectionUpdateThreshold) {
+            shouldUpdateReflection = true;
+        }
+        
+        // Check if terrain texture changed
+        int currentTerrainIndex = state.world.GetCurrentTextureIndex();
+        if (currentTerrainIndex != state.lastTerrainTextureIndex) {
+            shouldUpdateReflection = true;
+            state.lastTerrainTextureIndex = currentTerrainIndex;
+        }
+    }
+    
+    if (shouldUpdateReflection && state.world.IsTexturesLoaded() && state.reflectionCubemap) {
         glm::vec3 spherePos = state.mirrorSphere.GetPosition();
-        state.reflectionCubemap.BeginRender();
+
+        state.reflectionCubemap->BeginRender();
+
         for (unsigned int face = 0; face < 6; face++) {
-            state.reflectionCubemap.BeginFaceRender(face);
+            state.reflectionCubemap->BeginFaceRender(face);
 
-            glm::mat4 reflectionView = state.reflectionCubemap.GetViewMatrix(face, spherePos);
-            glm::mat4 reflectionProjection = state.reflectionCubemap.GetProjectionMatrix();
+            glm::mat4 reflectionView = state.reflectionCubemap->GetViewMatrix(face, spherePos);
+            glm::mat4 reflectionProjection = state.reflectionCubemap->GetProjectionMatrix();
 
-            // Render terrain into reflection
+            // Clear face
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_LESS);
+
+            // 1a. Render skybox into reflection (center on sphere position)
+            glDisable(GL_CULL_FACE);
+            glDisable(GL_DEPTH_TEST); // Skybox doesn't need depth test
+            state.skyboxShader.Bind();
+            state.skyboxShader.SetMat4("u_View", reflectionView);
+            state.skyboxShader.SetMat4("u_Projection", reflectionProjection);
+
+            GLuint skyboxID = state.world.GetSkybox().GetTextureID();
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxID);
+            state.skyboxShader.SetInt("u_Skybox", 0);
+            state.world.GetSkybox().Draw();
+            state.skyboxShader.Unbind();
+            glEnable(GL_CULL_FACE);
+            glEnable(GL_DEPTH_TEST);
+
+            // 1b. Render terrain into reflection
+            glDisable(GL_CULL_FACE);
+            glActiveTexture(GL_TEXTURE0);
             state.terrainShader.Bind();
             state.terrainShader.SetMat4("u_Model", model);
             state.terrainShader.SetMat4("u_View", reflectionView);
@@ -82,25 +96,39 @@ void Render(AppState& state, const Application& app) {
             state.world.GetTerrain().Draw(state.terrainShader);
             state.terrainShader.Unbind();
 
-            state.reflectionCubemap.EndFaceRender();
+            // Note: Not rendering cloths into reflection for better performance
+            // Cloths are still rendered in the main pass and will be visible on the sphere
+
+            state.reflectionCubemap->EndFaceRender();
         }
-        state.reflectionCubemap.EndRender();
-        
-        // Reset the update flag - we have a valid cubemap now
+        state.reflectionCubemap->EndRender();
+
+        // Update tracking variables
+        state.lastReflectionUpdatePos = state.camera.GetPosition();
         state.reflectionNeedsUpdate = false;
-        std::cout << "Reflection cubemap updated (Optimization triggered)" << std::endl;
     }
 
-    // IMPORTANT: Restore main viewport explicitly
+    // Restore main viewport
     glViewport(0, 0, viewport[2], viewport[3]);
 
     // === 2. MAIN PASS RENDER (On-screen) ===
-    glClearColor(0.5f, 0.7f, 0.9f, 1.0f);  // Light blue sky
+    glClearColor(0.5f, 0.7f, 0.9f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
+
+    // --- Draw skybox ---
     glDisable(GL_CULL_FACE);
+    state.skyboxShader.Bind();
+    state.skyboxShader.SetMat4("u_View", view);
+    state.skyboxShader.SetMat4("u_Projection", projection);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, state.world.GetSkybox().GetTextureID());
+    state.skyboxShader.SetInt("u_Skybox", 0);
+    state.world.GetSkybox().Draw();
+    state.skyboxShader.Unbind();
+    glEnable(GL_CULL_FACE);
 
     // --- Draw terrain ---
     state.terrainShader.Bind();
@@ -110,7 +138,28 @@ void Render(AppState& state, const Application& app) {
     state.world.GetTerrain().Draw(state.terrainShader);
     state.terrainShader.Unbind();
 
+    // --- Draw Mirror Sphere ---
+    state.sphereShader.Bind();
+    glm::mat4 sphereModel = glm::translate(glm::mat4(1.0f), state.mirrorSphere.GetPosition());
+    state.sphereShader.SetMat4("u_Model", sphereModel);
+    state.sphereShader.SetMat4("u_View", view);
+    state.sphereShader.SetMat4("u_Projection", projection);
+    state.sphereShader.SetVec3("u_ViewPos", state.camera.GetPosition());
+    state.sphereShader.SetVec3("u_Color", state.mirrorSphere.GetColor());
+
+    // Bind the environment map (reflection cubemap)
+    if (state.reflectionCubemap) {
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, state.reflectionCubemap->GetTextureID());
+        state.sphereShader.SetInt("u_EnvironmentMap", 0);
+    }
+
+    // Ensure normal render states are enabled
+    glEnable(GL_DEPTH_TEST);
     glEnable(GL_CULL_FACE);
+
+    state.mirrorSphere.Draw();
+    state.sphereShader.Unbind();
 
     // --- Draw cloths ---
     state.clothShader.Bind();
@@ -121,12 +170,18 @@ void Render(AppState& state, const Application& app) {
     state.clothShader.SetVec3("u_ViewPos", state.camera.GetPosition());
     state.clothShader.SetBool("u_UseTexture", true);
 
+    glDisable(GL_CULL_FACE); // Better for thin cloths
     for (size_t i = 0; i < state.clothMeshes.size(); i++) {
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, state.clothTextures[i]);
-        state.clothShader.SetInt("u_ClothTexture", 0);
-        state.clothMeshes[i]->Draw(*reinterpret_cast<Renderer*>(nullptr), state.clothShader);
+        if (i < state.clothTextures.size()) {
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, state.clothTextures[i]);
+            state.clothShader.SetInt("u_ClothTexture", 0);
+            state.clothMeshes[i]->Draw(*reinterpret_cast<Renderer*>(nullptr), state.clothShader);
+        }
     }
+    glEnable(GL_CULL_FACE);
 
     state.clothShader.Unbind();
 }
+
+} // namespace cloth

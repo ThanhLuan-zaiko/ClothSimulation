@@ -2,34 +2,35 @@
 
 in vec3 v_Normal;
 in vec3 v_FragPos;
-in vec3 v_WorldPos;
-in vec3 v_ReflectDir;
 
 out vec4 out_Color;
 
 uniform samplerCube u_EnvironmentMap;
+uniform vec3 u_ViewPos;
 uniform vec3 u_Color;
 
 void main() {
-    // Sample the environment map using the reflection direction
-    // This creates the mirror/chrome effect
-    vec3 envColor = texture(u_EnvironmentMap, v_ReflectDir).rgb;
-    
-    // Add fresnel effect for more realistic mirror (Schlick approximation)
-    // Edges reflect more than center
-    vec3 viewDir = normalize(v_WorldPos);
-    float fresnel = dot(v_Normal, -viewDir);
-    fresnel = clamp(1.0 - fresnel, 0.0, 1.0);
-    float fresnelPower = pow(fresnel, 2.0);
-    
-    // Pure chrome/mirror effect - 100% reflection with edge brightening
-    vec3 mirrorColor = envColor * (0.7 + 0.3 * fresnelPower);
-    
-    // Apply sphere color as a very subtle tint (almost pure chrome)
-    vec3 finalColor = mirrorColor * u_Color;
-    
-    // Add slight brightness boost for shiny chrome look
-    finalColor = finalColor * 1.2;
-    
-    out_Color = vec4(finalColor, 1.0);
+    // 1. Calculate direction from camera to fragment
+    vec3 viewDir = normalize(v_FragPos - u_ViewPos);
+
+    // 2. Reflect direction off the surface normal
+    vec3 normal = normalize(v_Normal);
+    vec3 reflectDir = reflect(viewDir, normal);
+
+    // 3. Sample environment map (Cubemap)
+    vec3 envColor = texture(u_EnvironmentMap, reflectDir).rgb;
+
+    // 4. Fresnel effect for realism
+    float fresnel = 1.0 - max(dot(normal, -viewDir), 0.0);
+    fresnel = pow(fresnel, 3.0);
+
+    // 5. Final color: Chrome-like reflection
+    // 95% reflection, 5% subtle tint from u_Color
+    vec3 finalColor = mix(envColor, u_Color, 0.05);
+
+    // Add bright highlight at glancing angles
+    finalColor = finalColor + (fresnel * 0.4);
+
+    // Slight brightness boost for chrome look
+    out_Color = vec4(finalColor * 1.1, 1.0);
 }

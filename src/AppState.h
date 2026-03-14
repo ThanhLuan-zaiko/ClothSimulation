@@ -14,6 +14,8 @@
 
 using namespace cloth;
 
+namespace cloth {
+
 // Global application state
 struct AppState {
     // Camera
@@ -37,10 +39,17 @@ struct AppState {
     // Shaders
     Shader clothShader;
     Shader terrainShader;
+    Shader sphereShader;
+    Shader skyboxShader;
 
     // Reflection
-    ReflectionCubemap reflectionCubemap;
+    ReflectionCubemap* reflectionCubemap = nullptr;  // Use pointer - initialized in InitializeGL()
     bool reflectionNeedsUpdate = true;
+    
+    // Lazy update tracking
+    glm::vec3 lastReflectionUpdatePos;  // Last camera position when reflection was updated
+    float reflectionUpdateThreshold = 2.5f;  // Min distance to trigger update (increased for better performance)
+    int lastTerrainTextureIndex = -1;  // Track terrain texture index
 
     // Terrain texture state
     unsigned int terrainTextureID = 0;
@@ -130,17 +139,32 @@ struct AppState {
 
     // Initialize OpenGL-dependent objects (call after GL context is ready)
     void InitializeGL() {
-        // Initialize sphere
-        mirrorSphere = Sphere(0.7f, 128);
-        mirrorSphere.SetPosition(glm::vec3(0.0f, 5.0f, 0.0f));
+        // Gigantic 3m radius mirror sphere
+        mirrorSphere.SetRadius(3.0f);
+        mirrorSphere.Initialize();
+        mirrorSphere.SetPosition(glm::vec3(0.0f, 10.0f, 0.0f)); // Raised above ground for better visibility
         mirrorSphere.SetColor(glm::vec3(1.0f, 1.0f, 1.0f));
 
-        // Initialize reflection cubemap
-        reflectionCubemap = ReflectionCubemap(1024);
+        // Initialize reflection cubemap (AFTER GL context is ready!)
+        // 512x512 is a good balance between quality and performance
+        reflectionCubemap = new ReflectionCubemap(512);
+
+        // Initialize lazy update tracking
+        lastReflectionUpdatePos = camera.GetPosition();
+        lastTerrainTextureIndex = -1;
+
+        // Set collision sphere in physics world
+        physicsWorld.SetCollisionSphere(mirrorSphere.GetPosition(), mirrorSphere.GetRadius());
     }
 
     // Destructor - clean up dynamically allocated resources
     ~AppState() {
+        // Clean up reflection cubemap
+        if (reflectionCubemap) {
+            delete reflectionCubemap;
+            reflectionCubemap = nullptr;
+        }
+        
         // Clean up cloth textures
         for (unsigned int texID : clothTextures) {
             if (glIsTexture(texID)) {
@@ -162,3 +186,5 @@ struct AppState {
         }
     }
 };
+
+} // namespace cloth

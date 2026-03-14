@@ -36,6 +36,13 @@ public:
     void SetIterations(int iterations) { m_Iterations = iterations; }
     int GetIterations() const { return m_Iterations; }
 
+    // Sphere collision
+    void SetCollisionSphere(const glm::vec3& center, float radius) {
+        m_SphereCenter = center;
+        m_SphereRadius = radius;
+        m_HasSphere = true;
+    }
+
     void Clear();
 
 private:
@@ -45,6 +52,11 @@ private:
     glm::vec3 m_Gravity;
     int m_Iterations;  // Constraint solver iterations
     float m_TimeStep;
+
+    // Collision objects
+    bool m_HasSphere = false;
+    glm::vec3 m_SphereCenter = glm::vec3(0.0f);
+    float m_SphereRadius = 0.0f;
 };
 
 } // namespace cloth
