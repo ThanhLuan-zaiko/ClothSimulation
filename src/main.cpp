@@ -101,16 +101,21 @@ int main() {
     // Generate terrain heightmap AFTER OpenGL initialization
     state.world.GetTerrain().GenerateMountainHeightmap(3.0f);
     state.world.GetTerrain().SetHeightScale(1.0f);
+    
+    // Set terrain reference in physics world for collision
+    state.physicsWorld.SetTerrain(&state.world.GetTerrain());
 
-    // Create 3 cloths precisely centered to drape over the huge mirror sphere (radius 3.0)
-    // Cloth 1 - Main drape
+    // Create 3 cloths that will drop gracefully onto the mirror sphere
+    // Each cloth starts high above and falls down with a delay
+    
+    // Cloth 1 - First to drop (starts at y=25)
     ClothConfig clothConfig1;
-    clothConfig1.widthSegments = 50;
-    clothConfig1.heightSegments = 50;
-    clothConfig1.segmentLength = 0.15f;
-    clothConfig1.startX = -3.75f; // Centered
-    clothConfig1.startY = 10.0f; // High enough to clear the sphere
-    clothConfig1.startZ = -3.75f; // Centered
+    clothConfig1.widthSegments = 60;
+    clothConfig1.heightSegments = 60;
+    clothConfig1.segmentLength = 0.12f;
+    clothConfig1.startX = -3.6f;
+    clothConfig1.startY = 25.0f; // High above the sphere
+    clothConfig1.startZ = -3.6f;
     clothConfig1.pinTopLeft = false;
     clothConfig1.pinTopRight = false;
 
@@ -118,15 +123,18 @@ int main() {
     ClothMesh* clothMesh1 = new ClothMesh(*cloth1);
     state.cloths.push_back(cloth1);
     state.clothMeshes.push_back(clothMesh1);
+    state.clothDropTimers.push_back(0.0f);
+    state.clothDropped.push_back(false);
+    cloth1->SetAllParticlesPinned(true); // Pin all particles to hold in place
 
-    // Cloth 2 - Offset and higher
+    // Cloth 2 - Second to drop (starts at y=28, offset)
     ClothConfig clothConfig2;
-    clothConfig2.widthSegments = 40;
-    clothConfig2.heightSegments = 40;
-    clothConfig2.segmentLength = 0.15f;
-    clothConfig2.startX = -3.0f;
-    clothConfig2.startY = 12.0f; 
-    clothConfig2.startZ = -3.0f;
+    clothConfig2.widthSegments = 55;
+    clothConfig2.heightSegments = 55;
+    clothConfig2.segmentLength = 0.12f;
+    clothConfig2.startX = -3.3f;
+    clothConfig2.startY = 28.0f; // Higher than cloth 1
+    clothConfig2.startZ = -3.3f;
     clothConfig2.pinTopLeft = false;
     clothConfig2.pinTopRight = false;
 
@@ -134,15 +142,18 @@ int main() {
     ClothMesh* clothMesh2 = new ClothMesh(*cloth2);
     state.cloths.push_back(cloth2);
     state.clothMeshes.push_back(clothMesh2);
+    state.clothDropTimers.push_back(0.0f);
+    state.clothDropped.push_back(false);
+    cloth2->SetAllParticlesPinned(true); // Pin all particles to hold in place
 
-    // Cloth 3 - Highest
+    // Cloth 3 - Third to drop (starts at y=31, offset)
     ClothConfig clothConfig3;
-    clothConfig3.widthSegments = 40;
-    clothConfig3.heightSegments = 40;
-    clothConfig3.segmentLength = 0.15f;
-    clothConfig3.startX = -3.0f;
-    clothConfig3.startY = 14.0f; 
-    clothConfig3.startZ = -3.0f;
+    clothConfig3.widthSegments = 55;
+    clothConfig3.heightSegments = 55;
+    clothConfig3.segmentLength = 0.12f;
+    clothConfig3.startX = -3.3f;
+    clothConfig3.startY = 31.0f; // Highest
+    clothConfig3.startZ = -3.3f;
     clothConfig3.pinTopLeft = false;
     clothConfig3.pinTopRight = false;
 
@@ -150,12 +161,30 @@ int main() {
     ClothMesh* clothMesh3 = new ClothMesh(*cloth3);
     state.cloths.push_back(cloth3);
     state.clothMeshes.push_back(clothMesh3);
+    state.clothDropTimers.push_back(0.0f);
+    state.clothDropped.push_back(false);
+    cloth3->SetAllParticlesPinned(true); // Pin all particles to hold in place
 
     // Set update callback
     app.SetUpdateCallback([&](float deltaTime) {
         HandleInput(state, deltaTime);
 
-        // Update physics
+        // Update cloth drop timers and release cloths when it's time to fall
+        for (size_t i = 0; i < state.cloths.size(); i++) {
+            if (!state.clothDropped[i]) {
+                state.clothDropTimers[i] += deltaTime;
+                
+                // Calculate when this cloth should start falling
+                float dropTime = state.clothDropStartDelay + (i * state.clothDropDelay);
+                
+                if (state.clothDropTimers[i] >= dropTime) {
+                    state.clothDropped[i] = true;
+                    state.cloths[i]->SetAllParticlesPinned(false); // Release!
+                }
+            }
+        }
+
+        // Update physics for all particles
         state.physicsWorld.Update(deltaTime);
 
         // Update all cloth meshes

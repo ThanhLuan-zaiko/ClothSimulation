@@ -86,15 +86,21 @@ void Render(AppState& state, const Application& app) {
             glEnable(GL_CULL_FACE);
             glEnable(GL_DEPTH_TEST);
 
-            // 1b. Render terrain into reflection
-            glDisable(GL_CULL_FACE);
-            glActiveTexture(GL_TEXTURE0);
-            state.terrainShader.Bind();
-            state.terrainShader.SetMat4("u_Model", model);
-            state.terrainShader.SetMat4("u_View", reflectionView);
-            state.terrainShader.SetMat4("u_Projection", reflectionProjection);
-            state.world.GetTerrain().Draw(state.terrainShader);
-            state.terrainShader.Unbind();
+            // 1b. Render terrain into reflection (with occlusion culling)
+            // Occlusion Culling: Only render terrain if this face is pointing downward or horizontal
+            // Face directions: 0=+X, 1=-X, 2=+Y (up), 3=-Y (down), 4=+Z, 5=-Z
+            bool shouldRenderTerrain = (face != 2); // Don't render terrain for +Y (sky) face
+
+            if (shouldRenderTerrain) {
+                glDisable(GL_CULL_FACE);
+                glActiveTexture(GL_TEXTURE0);
+                state.terrainShader.Bind();
+                state.terrainShader.SetMat4("u_Model", model);
+                state.terrainShader.SetMat4("u_View", reflectionView);
+                state.terrainShader.SetMat4("u_Projection", reflectionProjection);
+                state.world.GetTerrain().Draw(state.terrainShader);
+                state.terrainShader.Unbind();
+            }
 
             // Note: Not rendering cloths into reflection for better performance
             // Cloths are still rendered in the main pass and will be visible on the sphere

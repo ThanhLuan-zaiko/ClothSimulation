@@ -1,4 +1,6 @@
 #include "PhysicsWorld.h"
+#include "world/Terrain.h"
+#include <iostream>
 
 namespace cloth {
 
@@ -13,14 +15,34 @@ PhysicsWorld::~PhysicsWorld() {
 }
 
 void PhysicsWorld::Update(float deltaTime) {
-    // Apply gravity to all particles
+    // Clamp deltaTime to prevent physics explosion
+    // Max 1/30s = 0.033s to prevent huge jumps
+    if (deltaTime > 0.033f) {
+        deltaTime = 0.033f;
+    }
+    if (deltaTime < 0.001f) {
+        deltaTime = 0.001f;
+    }
+    
+    // Apply gravity to all particles (skip particles with mass <= 0 or pinned)
+    int activeCount = 0;
     for (Particle* particle : m_Particles) {
-        if (!particle->isPinned) {
+        if (!particle->isPinned && particle->mass > 0.0f) {
+            activeCount++;
             particle->ApplyForce(m_Gravity * particle->mass);
-            
+
             // Calculate acceleration: a = F / m
             particle->acceleration = particle->force / particle->mass;
         }
+    }
+    
+    // Debug: Show collision setup on first frame
+    static bool firstUpdate = true;
+    if (firstUpdate) {
+        std::cout << "[PHYSICS] Collision setup - Sphere: r=" << m_SphereRadius 
+                  << " at y=" << m_SphereCenter.y << ", Ground: y=" << m_GroundLevel
+                  << ", Terrain: " << (m_Terrain ? "ENABLED" : "DISABLED") << std::endl;
+        firstUpdate = false;
     }
 
     // Update particles (Verlet integration)
@@ -28,21 +50,48 @@ void PhysicsWorld::Update(float deltaTime) {
         particle->Update(deltaTime);
         particle->ResetForce();
 
-        // Sphere collision
-        if (m_HasSphere && !particle->isPinned) {
-            glm::vec3 diff = particle->position - m_SphereCenter;
-            float dist = glm::length(diff);
-            float minRadius = m_SphereRadius + 0.02f; // Slight offset for better visuals
+        if (!particle->isPinned) {
+            // === Option A: Ground plane collision ===
+            if (particle->position.y < m_GroundLevel) {
+                particle->position.y = m_GroundLevel;
+                particle->previousPos.y = m_GroundLevel; // Stop vertical velocity
+            }
+            
+            // === Option C: Terrain heightmap collision ===
+            if (m_Terrain != nullptr) {
+                float terrainHeight = m_Terrain->GetHeightAt(particle->position.x, particle->position.z);
+                if (particle->position.y < terrainHeight) {
+                    particle->position.y = terrainHeight;
+                    particle->previousPos.y = terrainHeight; // Stop vertical velocity
+                }
+            }
 
-            if (dist < minRadius) {
-                // Resolve collision: push particle out of sphere
-                glm::vec3 normal = diff / dist;
-                particle->position = m_SphereCenter + normal * minRadius;
-                
-                // Friction-like behavior: damp movement along the surface
-                // For Verlet, we adjust previousPos to reduce velocity
-                glm::vec3 velocity = particle->position - particle->previousPos;
-                particle->previousPos = particle->position - velocity * 0.95f;
+            // === Option B: Improved sphere collision ===
+            if (m_HasSphere) {
+                glm::vec3 diff = particle->position - m_SphereCenter;
+                float dist = glm::length(diff);
+                float minRadius = m_SphereRadius + 0.02f; // Slight offset for better visuals
+
+                if (dist < minRadius) {
+                    glm::vec3 normal = diff / dist;
+                    // Push particle out of sphere
+                    particle->position = m_SphereCenter + normal * minRadius;
+
+                    // Reflect velocity off sphere surface (bounce effect)
+                    glm::vec3 velocity = particle->position - particle->previousPos;
+                    float dotVelNormal = glm::dot(velocity, normal);
+                    
+                    if (dotVelNormal < 0) {
+                        // Only reflect if moving toward sphere center
+                        // bounceFactor = 0.3 means 30% energy retained in bounce
+                        float bounceFactor = 0.3f;
+                        velocity -= (1.0f + bounceFactor) * dotVelNormal * normal;
+                        
+                        // Apply damping to simulate friction
+                        float damping = 0.9f;
+                        particle->previousPos = particle->position - velocity * damping;
+                    }
+                }
             }
         }
     }

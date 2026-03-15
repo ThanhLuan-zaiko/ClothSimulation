@@ -34,29 +34,29 @@ void Terrain::InitializeMesh() {
     std::cout << "Terrain OpenGL buffers created (VAO=" << m_VAO << ")" << std::endl;
 }
 
-float Terrain::CalculateHeight(float x, float z) {
+float Terrain::CalculateHeight(float x, float z) const {
     switch (m_HeightmapType) {
         case HeightmapType::Flat:
             return 0.0f;
-            
+
         case HeightmapType::Noise: {
             float scale = m_HeightFrequency;
             float height = glm::simplex(glm::vec2(x * scale, z * scale));
             height = height * m_HeightAmplitude;
             return height;
         }
-        
+
         case HeightmapType::Mountain: {
             float dist = std::sqrt(x * x + z * z);
             float maxDist = std::sqrt(m_Width * m_Width + m_Depth * m_Depth) * 0.5f;
             float height = std::max(0.0f, (maxDist - dist) / maxDist);
             height = std::pow(height, 2.0f) * m_HeightAmplitude;
-            
+
             // Add some noise
             float noise = glm::simplex(glm::vec2(x * 0.3f, z * 0.3f)) * 0.5f;
             return height + noise;
         }
-        
+
         case HeightmapType::Valley: {
             float dist = std::abs(x);
             float maxDist = m_Width * 0.5f;
@@ -261,6 +261,19 @@ void Terrain::GenerateValleyHeightmap(float depth) {
     m_HeightAmplitude = depth;
     RegenerateMesh();
     std::cout << "Terrain: Valley heightmap (depth=" << depth << ")" << std::endl;
+}
+
+float Terrain::GetHeightAt(float x, float z) const {
+    // Check if point is within terrain bounds
+    float halfWidth = m_Width * 0.5f;
+    float halfDepth = m_Depth * 0.5f;
+    
+    if (x < -halfWidth || x > halfWidth || z < -halfDepth || z > halfDepth) {
+        return 0.0f; // Outside terrain, return ground level
+    }
+    
+    // Calculate height using the same method as GenerateMesh
+    return CalculateHeight(x, z) * m_HeightScale;
 }
 
 } // namespace cloth

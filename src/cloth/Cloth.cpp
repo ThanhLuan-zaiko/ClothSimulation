@@ -177,4 +177,19 @@ void Cloth::Reset() {
     CreateConstraints();
 }
 
+void Cloth::SetGravityEnabled(bool enabled) {
+    m_GravityEnabled = enabled;
+}
+
+void Cloth::SetAllParticlesPinned(bool pinned) {
+    for (Particle* particle : m_Particles) {
+        particle->isPinned = pinned;
+        // When unpinning, reset previousPos to current position
+        // to prevent huge velocity spike from large deltaTime
+        if (!pinned) {
+            particle->previousPos = particle->position;
+        }
+    }
+}
+
 } // namespace cloth

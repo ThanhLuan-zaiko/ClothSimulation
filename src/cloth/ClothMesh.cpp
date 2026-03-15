@@ -1,6 +1,7 @@
 #include "ClothMesh.h"
 #include <glad/glad.h>
 #include <glm/glm.hpp>
+#include <iostream>
 
 namespace cloth {
 
@@ -70,7 +71,7 @@ void ClothMesh::BuildMesh() {
 void ClothMesh::Update() {
     // Update vertex positions from particles
     const auto& particles = m_Cloth.GetParticles();
-    
+
     for (size_t i = 0; i < m_Vertices.size() && i < particles.size(); i++) {
         m_Vertices[i].position = particles[i]->position;
     }

@@ -50,11 +50,19 @@ public:
 
     // Reset cloth to initial position
     void Reset();
+    
+    // Enable/disable gravity for this cloth
+    void SetGravityEnabled(bool enabled);
+    bool IsGravityEnabled() const { return m_GravityEnabled; }
+    
+    // Pin/unpin all particles (to hold cloth in place until drop time)
+    void SetAllParticlesPinned(bool pinned);
 
 private:
     PhysicsWorld& m_World;
     ClothConfig m_Config;
-    
+    bool m_GravityEnabled = true;  // Control if gravity affects this cloth
+
     std::vector<Particle*> m_Particles;
     std::vector<Constraint*> m_Constraints;
 

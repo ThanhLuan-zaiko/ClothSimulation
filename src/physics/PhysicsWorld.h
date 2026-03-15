@@ -42,6 +42,13 @@ public:
         m_SphereRadius = radius;
         m_HasSphere = true;
     }
+    
+    // Ground collision
+    void SetGroundLevel(float y) { m_GroundLevel = y; }
+    float GetGroundLevel() const { return m_GroundLevel; }
+    
+    // Terrain collision (optional - for heightmap-based terrain)
+    void SetTerrain(const class Terrain* terrain) { m_Terrain = terrain; }
 
     void Clear();
 
@@ -57,6 +64,12 @@ private:
     bool m_HasSphere = false;
     glm::vec3 m_SphereCenter = glm::vec3(0.0f);
     float m_SphereRadius = 0.0f;
+    
+    // Ground plane
+    float m_GroundLevel = 0.0f;
+    
+    // Terrain (for heightmap collision)
+    const class Terrain* m_Terrain = nullptr;
 };
 
 } // namespace cloth

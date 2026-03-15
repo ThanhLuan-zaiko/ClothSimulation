@@ -46,12 +46,15 @@ public:
     void GenerateNoiseHeightmap(float amplitude = 2.0f, float frequency = 0.5f);
     void GenerateMountainHeightmap(float peakHeight = 5.0f);
     void GenerateValleyHeightmap(float depth = 3.0f);
+    
+    // Get terrain height at specific (x, z) position
+    float GetHeightAt(float x, float z) const;
 
 private:
     void GenerateMesh(float width, float depth, int segments);
     void SetupBuffers();
     void RegenerateMesh();
-    float CalculateHeight(float x, float z);
+    float CalculateHeight(float x, float z) const;
 
     unsigned int m_VAO;
     unsigned int m_VBO;

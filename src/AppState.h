@@ -31,6 +31,12 @@ struct AppState {
     std::vector<Cloth*> cloths;
     std::vector<ClothMesh*> clothMeshes;
     std::vector<unsigned int> clothTextures;
+    
+    // Cloth drop animation
+    std::vector<float> clothDropTimers;      // Timer for each cloth drop
+    std::vector<bool> clothDropped;          // Whether each cloth has started falling
+    float clothDropDelay = 1.5f;             // Delay between each cloth drop
+    float clothDropStartDelay = 0.5f;        // Initial delay before first cloth drops
 
     // World and sphere
     World world;
