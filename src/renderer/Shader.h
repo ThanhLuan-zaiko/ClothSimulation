@@ -35,6 +35,7 @@ public:
     unsigned int GetID() const { return m_RendererID; }
 
     static Shader CreateFromFile(const std::string& vertexPath, const std::string& fragmentPath);
+    static Shader CreateComputeShaderFromFile(const std::string& computePath);
 
 private:
     unsigned int m_RendererID;
@@ -43,6 +44,7 @@ private:
     int GetUniformLocation(const std::string& name) const;
     unsigned int CompileShader(unsigned int type, const std::string& source);
     unsigned int CreateShaderProgram(const std::string& vertexSrc, const std::string& fragmentSrc);
+    unsigned int CreateComputeShaderProgram(const std::string& computeSrc);
 };
 
 } // namespace cloth

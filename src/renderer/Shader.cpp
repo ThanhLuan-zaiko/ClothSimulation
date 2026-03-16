@@ -97,6 +97,22 @@ Shader Shader::CreateFromFile(const std::string& vertexPath, const std::string& 
     return Shader(vStream.str(), fStream.str());
 }
 
+Shader Shader::CreateComputeShaderFromFile(const std::string& computePath) {
+    std::ifstream cFile(computePath);
+
+    if (!cFile.is_open()) {
+        std::cerr << "Failed to open compute shader file: " << computePath << std::endl;
+        return Shader();
+    }
+
+    std::stringstream cStream;
+    cStream << cFile.rdbuf();
+
+    Shader shader;
+    shader.m_RendererID = shader.CreateComputeShaderProgram(cStream.str());
+    return shader;
+}
+
 unsigned int Shader::CompileShader(unsigned int type, const std::string& source) {
     unsigned int id = glCreateShader(type);
     const char* src = source.c_str();
@@ -110,13 +126,20 @@ unsigned int Shader::CompileShader(unsigned int type, const std::string& source)
         glGetShaderiv(id, GL_INFO_LOG_LENGTH, &length);
         char* message = (char*)alloca(length * sizeof(char));
         glGetShaderInfoLog(id, length, &length, message);
-        std::cerr << "Failed to compile " << (type == GL_VERTEX_SHADER ? "vertex" : "fragment")
-                  << " shader!" << std::endl << message << std::endl;
+        std::cerr << "Failed to compile ";
+        if (type == GL_VERTEX_SHADER) std::cerr << "vertex";
+        else if (type == GL_FRAGMENT_SHADER) std::cerr << "fragment";
+        else if (type == GL_COMPUTE_SHADER) std::cerr << "compute";
+        std::cerr << " shader!" << std::endl << message << std::endl;
         glDeleteShader(id);
         return 0;
     }
 
-    std::cout << "Shader compiled OK: " << (type == GL_VERTEX_SHADER ? "vertex" : "fragment") << std::endl;
+    std::cout << "Shader compiled OK: ";
+    if (type == GL_VERTEX_SHADER) std::cout << "vertex";
+    else if (type == GL_FRAGMENT_SHADER) std::cout << "fragment";
+    else if (type == GL_COMPUTE_SHADER) std::cout << "compute";
+    std::cout << std::endl;
     return id;
 }
 
@@ -134,6 +157,20 @@ unsigned int Shader::CreateShaderProgram(const std::string& vertexSrc, const std
     glDeleteShader(vs);
     glDetachShader(program, fs);
     glDeleteShader(fs);
+
+    return program;
+}
+
+unsigned int Shader::CreateComputeShaderProgram(const std::string& computeSrc) {
+    unsigned int program = glCreateProgram();
+    unsigned int cs = CompileShader(GL_COMPUTE_SHADER, computeSrc);
+
+    glAttachShader(program, cs);
+    glLinkProgram(program);
+    glValidateProgram(program);
+
+    glDetachShader(program, cs);
+    glDeleteShader(cs);
 
     return program;
 }

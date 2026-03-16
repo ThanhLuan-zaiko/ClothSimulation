@@ -50,6 +50,9 @@ public:
     // Get terrain height at specific (x, z) position
     float GetHeightAt(float x, float z) const;
 
+    // Get terrain normal at specific (x, z) position
+    glm::vec3 GetNormalAt(float x, float z) const;
+
 private:
     void GenerateMesh(float width, float depth, int segments);
     void SetupBuffers();

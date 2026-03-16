@@ -1,4 +1,6 @@
 #include "ClothMesh.h"
+#include "physics/ParticleBuffer.h"  // For ParticleData struct
+#include "physics/GPUPhysicsWorld.h"  // For GPUPhysicsWorld
 #include <glad/glad.h>
 #include <glm/glm.hpp>
 #include <iostream>
@@ -6,8 +8,9 @@
 namespace cloth {
 
 ClothMesh::ClothMesh(Cloth& cloth)
-    : m_Cloth(cloth), m_IsDirty(true), m_VAO(0), m_VBO(0), m_EBO(0) {
-    
+    : m_Cloth(cloth), m_IsDirty(true), m_VAO(0), m_VBO(0), m_EBO(0),
+      m_GPUBased(false), m_ParticleBuffer(nullptr), m_ParticleOffset(0) {
+
     glGenVertexArrays(1, &m_VAO);
     glGenBuffers(1, &m_VBO);
     glGenBuffers(1, &m_EBO);
@@ -20,6 +23,12 @@ ClothMesh::~ClothMesh() {
     glDeleteVertexArrays(1, &m_VAO);
     glDeleteBuffers(1, &m_VBO);
     glDeleteBuffers(1, &m_EBO);
+}
+
+void ClothMesh::SetParticleBuffer(const ParticleBuffer* buffer, size_t offset) {
+    m_ParticleBuffer = buffer;
+    m_ParticleOffset = offset;
+    m_GPUBased = true;
 }
 
 void ClothMesh::BuildMesh() {
@@ -69,6 +78,8 @@ void ClothMesh::BuildMesh() {
 }
 
 void ClothMesh::Update() {
+    if (m_GPUBased) return; // Skip CPU update if using GPU
+
     // Update vertex positions from particles
     const auto& particles = m_Cloth.GetParticles();
 
@@ -99,7 +110,7 @@ void ClothMesh::Update() {
 }
 
 void ClothMesh::UpdateBuffer() {
-    if (!m_IsDirty) return;
+    if (!m_IsDirty || m_GPUBased) return;
 
     glBindVertexArray(m_VAO);
 
@@ -125,22 +136,77 @@ void ClothMesh::UpdateBuffer() {
     m_IsDirty = false;
 }
 
-void ClothMesh::Draw(Renderer& renderer, const Shader& shader) {
-    Update();
+void ClothMesh::BindForGPURendering() const {
+    if (!m_GPUBased || !m_ParticleBuffer) return;
 
     glBindVertexArray(m_VAO);
-    glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(m_Indices.size()), GL_UNSIGNED_INT, 0);
+
+    // Bind interleaved particle buffer as VBO (reading positions from GPU SSBO)
+    // ParticleData layout: position(16) + prevPosition(16) + velocity(16) = 48 bytes
+    glBindBuffer(GL_ARRAY_BUFFER, m_ParticleBuffer->GetBufferID());
+
+    // Re-setup vertex attributes to read from SSBO
+    // Position attribute (location 0) - offset 0 in ParticleData (48 bytes total)
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(ParticleData), (void*)0);
+
+    // Note: Normals are still calculated on CPU and stored in VBO
+    // For full GPU skinning, we'd need a separate normal calculation in compute shader
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_EBO);
+}
+
+void ClothMesh::Unbind() const {
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindVertexArray(0);
 }
 
-void ClothMesh::DrawWireframe(Renderer& renderer, const Shader& shader) {
-    Update();
+void ClothMesh::Draw(Renderer& renderer, const Shader& shader) {
+    if (m_GPUBased && m_ParticleBuffer) {
+        // Bind buffer mỗi frame (phòng trường hợp buffer ID thay đổi)
+        BindForGPURendering();
+        
+        // Debug: Check for OpenGL errors
+        GLenum err = glGetError();
+        if (err != GL_NO_ERROR) {
+            std::cerr << "[ClothMesh::Draw] OpenGL ERROR before draw: " << err << std::endl;
+        }
+        
+        glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(m_Indices.size()), GL_UNSIGNED_INT, 0);
+        
+        // Check for draw errors
+        err = glGetError();
+        if (err != GL_NO_ERROR) {
+            std::cerr << "[ClothMesh::Draw] OpenGL ERROR after draw: " << err << std::endl;
+        }
+        
+        Unbind();
+    } else {
+        // CPU-based rendering (legacy)
+        Update();
 
-    glBindVertexArray(m_VAO);
-    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-    glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(m_Indices.size()), GL_UNSIGNED_INT, 0);
-    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-    glBindVertexArray(0);
+        glBindVertexArray(m_VAO);
+        glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(m_Indices.size()), GL_UNSIGNED_INT, 0);
+        glBindVertexArray(0);
+    }
+}
+
+void ClothMesh::DrawWireframe(Renderer& renderer, const Shader& shader) {
+    if (m_GPUBased && m_ParticleBuffer) {
+        BindForGPURendering();
+        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+        glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(m_Indices.size()), GL_UNSIGNED_INT, 0);
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        Unbind();
+    } else {
+        Update();
+
+        glBindVertexArray(m_VAO);
+        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+        glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(m_Indices.size()), GL_UNSIGNED_INT, 0);
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        glBindVertexArray(0);
+    }
 }
 
 glm::vec3 ClothMesh::CalculateNormal(const glm::vec3& p1, const glm::vec3& p2, const glm::vec3& p3) {

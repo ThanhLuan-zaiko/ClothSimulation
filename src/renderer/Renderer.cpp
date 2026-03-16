@@ -1,16 +1,17 @@
 #include "Renderer.h"
 #include "world/Terrain.h"
 #include "AppState.h"
+
+// Include Windows before glad to avoid APIENTRY macro redefinition warning
+#ifdef _WIN32
+    #include <Windows.h>
+#endif
+
 #include <glad/glad.h>
 #include <stb_image.h>
 #include <iostream>
 #include <filesystem>
 #include <algorithm>
-
-// Prevent macro redefinition warning for APIENTRY
-#ifdef _WIN32
-    #include <Windows.h>
-#endif
 
 namespace cloth {
 

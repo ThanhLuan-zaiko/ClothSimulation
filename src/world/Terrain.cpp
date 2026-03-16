@@ -267,13 +267,34 @@ float Terrain::GetHeightAt(float x, float z) const {
     // Check if point is within terrain bounds
     float halfWidth = m_Width * 0.5f;
     float halfDepth = m_Depth * 0.5f;
-    
+
     if (x < -halfWidth || x > halfWidth || z < -halfDepth || z > halfDepth) {
         return 0.0f; // Outside terrain, return ground level
     }
-    
+
     // Calculate height using the same method as GenerateMesh
     return CalculateHeight(x, z) * m_HeightScale;
+}
+
+glm::vec3 Terrain::GetNormalAt(float x, float z) const {
+    // Check if point is within terrain bounds
+    float halfWidth = m_Width * 0.5f;
+    float halfDepth = m_Depth * 0.5f;
+
+    if (x < -halfWidth || x > halfWidth || z < -halfDepth || z > halfDepth) {
+        return glm::vec3(0.0f, 1.0f, 0.0f); // Outside terrain, return up normal
+    }
+
+    // Calculate normal using finite differences (same as in GenerateMesh)
+    float delta = 0.1f; // Small offset for numerical stability
+    float hL = CalculateHeight(x - delta, z) * m_HeightScale;
+    float hR = CalculateHeight(x + delta, z) * m_HeightScale;
+    float hD = CalculateHeight(x, z - delta) * m_HeightScale;
+    float hU = CalculateHeight(x, z + delta) * m_HeightScale;
+
+    // Normal is derived from height gradients
+    glm::vec3 normal = glm::normalize(glm::vec3(hL - hR, 2.0f * delta, hD - hU));
+    return normal;
 }
 
 } // namespace cloth

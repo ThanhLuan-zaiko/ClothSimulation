@@ -6,7 +6,7 @@
 #include "renderer/Camera.h"
 #include "renderer/Shader.h"
 #include "renderer/ReflectionCubemap.h"
-#include "physics/PhysicsWorld.h"
+#include "physics/GPUPhysicsWorld.h"
 #include "cloth/Cloth.h"
 #include "cloth/ClothMesh.h"
 #include "world/World.h"
@@ -24,13 +24,15 @@ struct AppState {
     float cameraPitch = -20.0f;
     float cameraFOV = 45.0f;
 
-    // Physics
-    PhysicsWorld physicsWorld;
+    // Physics (GPU-based)
+    GPUPhysicsWorld physicsWorld;
 
     // Cloths
     std::vector<Cloth*> cloths;
     std::vector<ClothMesh*> clothMeshes;
     std::vector<unsigned int> clothTextures;
+    std::vector<size_t> clothParticleCounts;      // Number of particles per cloth (for GPU physics)
+    std::vector<size_t> clothParticleOffsets;     // Cumulative particle offsets for each cloth (for GPU unpinning)
     
     // Cloth drop animation
     std::vector<float> clothDropTimers;      // Timer for each cloth drop
@@ -138,9 +140,7 @@ struct AppState {
         camera.SetPosition(glm::vec3(0.0f, 15.0f, 25.0f));
         camera.SetRotation(glm::vec3(-90.0f, -20.0f, 0.0f));
 
-        // Initialize physics world
-        physicsWorld.SetGravity(glm::vec3(0.0f, -9.81f, 0.0f));
-        physicsWorld.SetIterations(5);
+        // GPU Physics world will be initialized in InitializeGL() after GL context is ready
     }
 
     // Initialize OpenGL-dependent objects (call after GL context is ready)
@@ -158,6 +158,17 @@ struct AppState {
         // Initialize lazy update tracking
         lastReflectionUpdatePos = camera.GetPosition();
         lastTerrainTextureIndex = -1;
+
+        // Initialize GPU physics world
+        GPUPhysicsConfig config;
+        config.gravity = glm::vec3(0.0f, -9.81f, 0.0f);
+        config.damping = 0.98f;
+        config.iterations = 5;
+        config.collisionMargin = 0.05f;
+        config.dampingFactor = 0.85f;
+        config.frictionFactor = 0.92f;
+        config.collisionSubsteps = 2;
+        physicsWorld.Initialize(config);
 
         // Set collision sphere in physics world
         physicsWorld.SetCollisionSphere(mirrorSphere.GetPosition(), mirrorSphere.GetRadius());

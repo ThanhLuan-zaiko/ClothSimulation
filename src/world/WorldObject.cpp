@@ -164,8 +164,7 @@ Rock::Rock(float size, float irregularity)
 void Rock::GenerateMesh() {
     m_Vertices.clear();
     m_Indices.clear();
-    
-    std::random_device rd;
+
     std::mt19937 gen(42); // Fixed seed for consistency
     std::uniform_real_distribution<float> dis(1.0f - m_Irregularity, 1.0f + m_Irregularity);
     

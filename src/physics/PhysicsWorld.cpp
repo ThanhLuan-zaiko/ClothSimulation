@@ -56,13 +56,79 @@ void PhysicsWorld::Update(float deltaTime) {
                 particle->position.y = m_GroundLevel;
                 particle->previousPos.y = m_GroundLevel; // Stop vertical velocity
             }
-            
-            // === Option C: Terrain heightmap collision ===
+
+            // === Option C: Enhanced Terrain heightmap collision ===
             if (m_Terrain != nullptr) {
+                // Collision parameters
+                const float collisionMargin = 0.12f;  // Small offset to prevent sinking
+                const float dampingFactor = 0.85f;    // Velocity damping on contact (0 = full stop, 1 = no damping)
+                const float frictionFactor = 0.92f;   // Tangential friction (0 = full friction, 1 = no friction)
+                const int collisionSubsteps = 3;      // Sub-steps for continuous collision detection
+
+                // Get terrain properties at particle position
                 float terrainHeight = m_Terrain->GetHeightAt(particle->position.x, particle->position.z);
-                if (particle->position.y < terrainHeight) {
-                    particle->position.y = terrainHeight;
-                    particle->previousPos.y = terrainHeight; // Stop vertical velocity
+                glm::vec3 terrainNormal = m_Terrain->GetNormalAt(particle->position.x, particle->position.z);
+
+                // Continuous collision detection using sub-steps
+                glm::vec3 startPos = particle->previousPos;
+                glm::vec3 endPos = particle->position;
+                glm::vec3 stepVec = (endPos - startPos) / static_cast<float>(collisionSubsteps);
+                
+                bool collisionDetected = false;
+                glm::vec3 collisionPoint = endPos;
+                glm::vec3 collisionNormal = terrainNormal;
+
+                // Check each sub-step for collision
+                for (int step = 1; step <= collisionSubsteps; step++) {
+                    glm::vec3 checkPos = startPos + stepVec * static_cast<float>(step);
+                    float checkTerrainHeight = m_Terrain->GetHeightAt(checkPos.x, checkPos.z);
+                    
+                    if (checkPos.y < checkTerrainHeight + collisionMargin) {
+                        collisionDetected = true;
+                        collisionPoint = checkPos;
+                        collisionNormal = m_Terrain->GetNormalAt(checkPos.x, checkPos.z);
+                        break;
+                    }
+                }
+
+                // Apply collision response if collision detected
+                if (collisionDetected || particle->position.y < terrainHeight + collisionMargin) {
+                    float targetHeight = terrainHeight + collisionMargin;
+                    
+                    // Project particle position onto terrain surface
+                    glm::vec3 surfacePoint = particle->position;
+                    surfacePoint.y = targetHeight;
+
+                    // Calculate velocity before collision
+                    glm::vec3 velocity = particle->position - particle->previousPos;
+
+                    // Decompose velocity into normal and tangential components
+                    float normalVel = glm::dot(velocity, collisionNormal);
+                    glm::vec3 normalComponent = normalVel * collisionNormal;
+                    glm::vec3 tangentialComponent = velocity - normalComponent;
+
+                    // Apply damping to normal velocity (energy loss on impact)
+                    float dampedNormalVel = normalVel * dampingFactor;
+                    
+                    // Only apply damping if moving toward terrain (not away)
+                    if (normalVel < 0) {
+                        // Apply friction to tangential velocity
+                        tangentialComponent *= frictionFactor;
+                        
+                        // Reconstruct velocity with damping and friction
+                        velocity = tangentialComponent + dampedNormalVel * collisionNormal;
+                        
+                        // Update previous position to reflect new velocity
+                        particle->previousPos = particle->position - velocity;
+                    }
+
+                    // Push particle to terrain surface with margin
+                    particle->position.y = std::max(particle->position.y, targetHeight);
+                    
+                    // Also constrain previous position to prevent tunneling
+                    if (particle->previousPos.y < targetHeight) {
+                        particle->previousPos.y = targetHeight;
+                    }
                 }
             }
 
@@ -80,13 +146,13 @@ void PhysicsWorld::Update(float deltaTime) {
                     // Reflect velocity off sphere surface (bounce effect)
                     glm::vec3 velocity = particle->position - particle->previousPos;
                     float dotVelNormal = glm::dot(velocity, normal);
-                    
+
                     if (dotVelNormal < 0) {
                         // Only reflect if moving toward sphere center
                         // bounceFactor = 0.3 means 30% energy retained in bounce
                         float bounceFactor = 0.3f;
                         velocity -= (1.0f + bounceFactor) * dotVelNormal * normal;
-                        
+
                         // Apply damping to simulate friction
                         float damping = 0.9f;
                         particle->previousPos = particle->position - velocity * damping;

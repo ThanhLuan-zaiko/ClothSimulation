@@ -34,7 +34,7 @@ void Render(AppState& state, const Application& app) {
     // === 1. RENDER REFLECTION CUBEMAP (Off-screen) ===
     // Lazy update: Only update reflection when necessary
     bool shouldUpdateReflection = false;
-    
+
     // Always update on first frame
     if (state.reflectionNeedsUpdate) {
         shouldUpdateReflection = true;
@@ -44,7 +44,7 @@ void Render(AppState& state, const Application& app) {
         if (cameraMoveDist > state.reflectionUpdateThreshold) {
             shouldUpdateReflection = true;
         }
-        
+
         // Check if terrain texture changed
         int currentTerrainIndex = state.world.GetCurrentTextureIndex();
         if (currentTerrainIndex != state.lastTerrainTextureIndex) {
@@ -52,7 +52,7 @@ void Render(AppState& state, const Application& app) {
             state.lastTerrainTextureIndex = currentTerrainIndex;
         }
     }
-    
+
     if (shouldUpdateReflection && state.world.IsTexturesLoaded() && state.reflectionCubemap) {
         glm::vec3 spherePos = state.mirrorSphere.GetPosition();
 
@@ -114,13 +114,10 @@ void Render(AppState& state, const Application& app) {
         state.reflectionNeedsUpdate = false;
     }
 
-    // Restore main viewport
-    glViewport(0, 0, viewport[2], viewport[3]);
-
     // === 2. MAIN PASS RENDER (On-screen) ===
-    glClearColor(0.5f, 0.7f, 0.9f, 1.0f);
+    glClearColor(0.1f, 0.1f, 0.2f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    
+
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
 
@@ -176,6 +173,9 @@ void Render(AppState& state, const Application& app) {
     state.clothShader.SetVec3("u_ViewPos", state.camera.GetPosition());
     state.clothShader.SetBool("u_UseTexture", true);
 
+    // Bind particle SSBO for GPU-based cloth rendering
+    state.physicsWorld.BindForRendering();
+
     glDisable(GL_CULL_FACE); // Better for thin cloths
     for (size_t i = 0; i < state.clothMeshes.size(); i++) {
         if (i < state.clothTextures.size()) {
@@ -186,6 +186,9 @@ void Render(AppState& state, const Application& app) {
         }
     }
     glEnable(GL_CULL_FACE);
+
+    // Unbind particle buffer
+    state.physicsWorld.Unbind();
 
     state.clothShader.Unbind();
 }

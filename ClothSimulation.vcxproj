@@ -161,6 +161,9 @@
     <ClCompile Include="src\physics\PhysicsWorld.cpp" />
     <ClCompile Include="src\physics\Particle.cpp" />
     <ClCompile Include="src\physics\Constraint.cpp" />
+    <ClCompile Include="src\physics\GPUPhysicsWorld.cpp" />
+    <ClCompile Include="src\physics\ParticleBuffer.cpp" />
+    <ClCompile Include="src\physics\ConstraintBuffer.cpp" />
     <ClCompile Include="src\cloth\Cloth.cpp" />
     <ClCompile Include="src\cloth\ClothMesh.cpp" />
     <ClCompile Include="src\world\Terrain.cpp" />
@@ -184,6 +187,9 @@
     <ClInclude Include="src\physics\PhysicsWorld.h" />
     <ClInclude Include="src\physics\Particle.h" />
     <ClInclude Include="src\physics\Constraint.h" />
+    <ClInclude Include="src\physics\GPUPhysicsWorld.h" />
+    <ClInclude Include="src\physics\ParticleBuffer.h" />
+    <ClInclude Include="src\physics\ConstraintBuffer.h" />
     <ClInclude Include="src\cloth\Cloth.h" />
     <ClInclude Include="src\cloth\ClothMesh.h" />
     <ClInclude Include="src\utils\MathUtils.h" />
@@ -206,6 +212,7 @@
     <None Include="shaders\basic\basic.frag" />
     <None Include="shaders\sphere\sphere.vert" />
     <None Include="shaders\sphere\sphere.frag" />
+    <None Include="shaders\physics\physics.comp" />
   </ItemGroup>
 
   <!-- Copy shaders to output directory -->
@@ -214,6 +221,7 @@
     <MakeDir Directories="$(OutDir)shaders\cloth" />
     <MakeDir Directories="$(OutDir)shaders\basic" />
     <MakeDir Directories="$(OutDir)shaders\sphere" />
+    <MakeDir Directories="$(OutDir)shaders\physics" />
     <Copy SourceFiles="$(ProjectDir)shaders\terrain\terrain.vert" DestinationFiles="$(OutDir)shaders\terrain\terrain.vert" />
     <Copy SourceFiles="$(ProjectDir)shaders\terrain\terrain.frag" DestinationFiles="$(OutDir)shaders\terrain\terrain.frag" />
     <Copy SourceFiles="$(ProjectDir)shaders\terrain\terrain_test.frag" DestinationFiles="$(OutDir)shaders\terrain\terrain_test.frag" />
@@ -223,6 +231,7 @@
     <Copy SourceFiles="$(ProjectDir)shaders\basic\basic.frag" DestinationFiles="$(OutDir)shaders\basic\basic.frag" />
     <Copy SourceFiles="$(ProjectDir)shaders\sphere\sphere.vert" DestinationFiles="$(OutDir)shaders\sphere\sphere.vert" />
     <Copy SourceFiles="$(ProjectDir)shaders\sphere\sphere.frag" DestinationFiles="$(OutDir)shaders\sphere\sphere.frag" />
+    <Copy SourceFiles="$(ProjectDir)shaders\physics\physics.comp" DestinationFiles="$(OutDir)shaders\physics\physics.comp" />
   </Target>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

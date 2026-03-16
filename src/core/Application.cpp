@@ -9,7 +9,7 @@ namespace cloth {
 
 Application::Application()
     : m_Running(true), m_DeltaTime(0.0f), m_LastFrameTime(0.0f) {
-    
+
     m_Window = new Window(WindowProps("Cloth Simulation", 1280, 720));
     g_WindowHandle = m_Window->GetNativeWindow();
 

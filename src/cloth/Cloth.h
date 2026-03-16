@@ -2,7 +2,7 @@
 
 #include "../physics/Particle.h"
 #include "../physics/Constraint.h"
-#include "../physics/PhysicsWorld.h"
+#include "../physics/GPUPhysicsWorld.h"
 #include <vector>
 #include <glm/glm.hpp>
 
@@ -29,14 +29,26 @@ struct ClothConfig {
           pinTopRight(false) {}
 };
 
+/**
+ * Cloth class - CPU-side representation (for legacy/compatibility)
+ * 
+ * Note: For GPU physics simulation, cloth data is stored directly on GPU
+ * via GPUPhysicsWorld. This class is kept for compatibility and can be
+ * used for CPU-based fallback rendering.
+ */
 class Cloth {
 public:
-    Cloth(PhysicsWorld& world, const ClothConfig& config = ClothConfig());
+    // Legacy constructor (CPU physics) - deprecated
+    Cloth(class PhysicsWorld& world, const ClothConfig& config = ClothConfig());
+
+    // GPU physics constructor (dummy - data is on GPU)
+    Cloth(GPUPhysicsWorld& world, const ClothConfig& config = ClothConfig());
+
     ~Cloth();
 
     void Update(float deltaTime);
-    
-    // Access particles for rendering
+
+    // Access particles for rendering (returns empty for GPU-based cloth)
     const std::vector<Particle*>& GetParticles() const { return m_Particles; }
     const std::vector<Constraint*>& GetConstraints() const { return m_Constraints; }
 
@@ -50,26 +62,21 @@ public:
 
     // Reset cloth to initial position
     void Reset();
-    
+
     // Enable/disable gravity for this cloth
     void SetGravityEnabled(bool enabled);
-    bool IsGravityEnabled() const { return m_GravityEnabled; }
-    
+    bool IsGravityEnabled() const;
+
     // Pin/unpin all particles (to hold cloth in place until drop time)
     void SetAllParticlesPinned(bool pinned);
 
 private:
-    PhysicsWorld& m_World;
     ClothConfig m_Config;
     bool m_GravityEnabled = true;  // Control if gravity affects this cloth
 
+    // Empty for GPU-based cloth
     std::vector<Particle*> m_Particles;
     std::vector<Constraint*> m_Constraints;
-
-    void CreateParticles();
-    void CreateConstraints();
-    Particle* GetParticle(int x, int y);
-    const Particle* GetParticle(int x, int y) const;
 };
 
 } // namespace cloth
