@@ -172,6 +172,7 @@
     <ClCompile Include="src\world\WorldObject.cpp" />
     <ClCompile Include="src\world\Sphere.cpp" />
     <ClCompile Include="src\renderer\ReflectionCubemap.cpp" />
+    <ClCompile Include="src\utils\GPUBenchmark.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\core\Application.h" />
@@ -195,6 +196,12 @@
     <ClInclude Include="src\utils\MathUtils.h" />
     <ClInclude Include="src\utils\Timer.h" />
     <ClInclude Include="src\utils\Types.h" />
+    <ClInclude Include="src\utils\GPUDetection.h" />
+    <ClInclude Include="src\utils\GPUBenchmark.h" />
+    <ClInclude Include="src\utils\QualityPreset.h" />
+    <ClInclude Include="src\utils\QualityClassifier.h" />
+    <ClInclude Include="src\utils\ClothSimulationBenchmark.h" />
+    <ClInclude Include="src\utils\AdaptiveQuality.h" />
     <ClInclude Include="src\world\Terrain.h" />
     <ClInclude Include="src\world\World.h" />
     <ClInclude Include="src\world\Sphere.h" />

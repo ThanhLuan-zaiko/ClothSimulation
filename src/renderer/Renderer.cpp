@@ -2,8 +2,8 @@
 #include "world/Terrain.h"
 #include "AppState.h"
 
-// Include Windows before glad to avoid APIENTRY macro redefinition warning
 #ifdef _WIN32
+    #define WIN32_LEAN_AND_MEAN
     #include <Windows.h>
 #endif
 
@@ -170,7 +170,7 @@ void LoadClothTextures(AppState& state) {
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
             stbi_image_free(data);
-            std::cout << "Loaded cloth texture " << (i + 1) << ": " << clothTexturePaths[i] << std::endl;
+            std::cout << "Loaded cloth texture " << (i + 1) << ": " << width << "x" << height << std::endl;
         } else {
             std::cerr << "Failed to load cloth texture: " << clothTexturePaths[i] << std::endl;
         }

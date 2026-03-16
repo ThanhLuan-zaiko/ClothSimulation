@@ -35,15 +35,6 @@ void PhysicsWorld::Update(float deltaTime) {
             particle->acceleration = particle->force / particle->mass;
         }
     }
-    
-    // Debug: Show collision setup on first frame
-    static bool firstUpdate = true;
-    if (firstUpdate) {
-        std::cout << "[PHYSICS] Collision setup - Sphere: r=" << m_SphereRadius 
-                  << " at y=" << m_SphereCenter.y << ", Ground: y=" << m_GroundLevel
-                  << ", Terrain: " << (m_Terrain ? "ENABLED" : "DISABLED") << std::endl;
-        firstUpdate = false;
-    }
 
     // Update particles (Verlet integration)
     for (Particle* particle : m_Particles) {

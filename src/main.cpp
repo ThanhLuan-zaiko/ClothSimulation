@@ -7,11 +7,21 @@
 #include "AppState.h"
 #include "InputHandler.h"
 #include "SceneRenderer.h"
+#include "utils/GPUDetection.h"
+#include "utils/GPUBenchmark.h"
+#include "utils/QualityClassifier.h"
+#include "utils/ClothSimulationBenchmark.h"
+#include "utils/AdaptiveQuality.h"
 
 using namespace cloth;
 
 // Global application pointer
 static Application* g_App = nullptr;
+
+// Global state pointer (defined here, used in Application.cpp)
+namespace cloth {
+    AppState* g_State = nullptr;
+}
 
 // Helper to get absolute path relative to executable
 std::string GetAssetPath(const std::string& relativePath) {
@@ -42,6 +52,26 @@ std::string GetAssetPath(const std::string& relativePath) {
 }
 
 int main() {
+    // === APPLY TDR DELAY FIX FOR INTEL GPU ===
+    // Increase GPU timeout from 2s to 10s to prevent driver timeout crashes
+    HKEY hKey;
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, 
+        "SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers", 0, 
+        KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
+        DWORD tdrDelay = 10;
+        DWORD tdrDdiDelay = 10;
+        RegSetValueExA(hKey, "TdrDelay", 0, REG_DWORD, (BYTE*)&tdrDelay, sizeof(tdrDelay));
+        RegSetValueExA(hKey, "TdrDdiDelay", 0, REG_DWORD, (BYTE*)&tdrDdiDelay, sizeof(tdrDdiDelay));
+        RegCloseKey(hKey);
+        std::cout << "[GPU] TDR Delay applied: 10 seconds (RESTART REQUIRED for full effect)" << std::endl;
+    } else {
+        std::cout << "[GPU] Warning: Could not apply TDR delay (run as Administrator)" << std::endl;
+    }
+
+    std::cout << "\n========================================" << std::endl;
+    std::cout << "     CLOTH SIMULATION - GPU AGNOSTIC" << std::endl;
+    std::cout << "========================================\n" << std::endl;
+
     std::cout << "=== Cloth Simulation ===" << std::endl;
     std::cout << "Controls:" << std::endl;
     std::cout << "  WASD/Arrows - Move camera" << std::endl;
@@ -70,6 +100,7 @@ int main() {
 
     // Create application state
     AppState state;
+    g_State = &state;  // Set global state pointer
 
     // Initialize OpenGL-dependent objects (GL context is now ready)
     state.InitializeGL();
@@ -105,9 +136,23 @@ int main() {
     // Set terrain reference in GPU physics world for collision
     state.physicsWorld.SetTerrain(&state.world.GetTerrain());
 
-    // Pre-load textures
+    // Apply GPU-detected physics settings (from AppState)
+    GPUPhysicsConfig gpuPhysicsConfig;
+    gpuPhysicsConfig.gravity = glm::vec3(0.0f, -9.81f, 0.0f);
+    gpuPhysicsConfig.damping = 0.98f;
+    gpuPhysicsConfig.iterations = state.gpuInfo.physicsIterations;
+    gpuPhysicsConfig.collisionMargin = 0.05f;
+    gpuPhysicsConfig.dampingFactor = 0.85f;
+    gpuPhysicsConfig.frictionFactor = 0.92f;
+    gpuPhysicsConfig.collisionSubsteps = state.gpuInfo.collisionSubsteps;
+    state.physicsWorld.SetConfig(gpuPhysicsConfig);
+    state.physicsWorld.SetBatchCount(state.gpuInfo.batchCount);
+    
+    std::cout << "[Physics] Applied GPU settings: iterations=" << state.gpuInfo.physicsIterations 
+              << ", substeps=" << state.gpuInfo.collisionSubsteps << ", batches=" << state.gpuInfo.batchCount << std::endl;
+
+    // Pre-load world textures
     state.world.LoadTextures();
-    LoadClothTextures(state);
 
     // Create 3 cloths that will drop gracefully onto the mirror sphere
     // Each cloth starts high above and falls down with a delay
@@ -116,10 +161,10 @@ int main() {
     // Track cumulative particle offsets for correct unpinning
     size_t cumulativeParticleOffset = 0;
 
-    // Cloth 1 - First to drop (starts at y=25)
+    // Cloth 1 - First to drop (starts at y=25) - RESOLUTION BASED ON GPU
     ClothConfig clothConfig1;
-    clothConfig1.widthSegments = 60;
-    clothConfig1.heightSegments = 60;
+    clothConfig1.widthSegments = state.gpuInfo.clothResolution[0];
+    clothConfig1.heightSegments = state.gpuInfo.clothResolution[0];
     clothConfig1.segmentLength = 0.12f;
     clothConfig1.startX = -3.6f;
     clothConfig1.startY = 25.0f;
@@ -145,10 +190,10 @@ int main() {
     state.clothParticleOffsets.push_back(cumulativeParticleOffset);  // Track offset
     cumulativeParticleOffset += cloth1Count;
 
-    // Cloth 2 - Second to drop (starts at y=28, offset)
+    // Cloth 2 - Second to drop (starts at y=28, offset) - RESOLUTION BASED ON GPU
     ClothConfig clothConfig2;
-    clothConfig2.widthSegments = 55;
-    clothConfig2.heightSegments = 55;
+    clothConfig2.widthSegments = state.gpuInfo.clothResolution[1];
+    clothConfig2.heightSegments = state.gpuInfo.clothResolution[1];
     clothConfig2.segmentLength = 0.12f;
     clothConfig2.startX = -3.3f;
     clothConfig2.startY = 28.0f;
@@ -173,10 +218,10 @@ int main() {
     state.clothParticleOffsets.push_back(cumulativeParticleOffset);  // Track offset
     cumulativeParticleOffset += cloth2Count;
 
-    // Cloth 3 - Third to drop (starts at y=31, offset)
+    // Cloth 3 - Third to drop (starts at y=31, offset) - RESOLUTION BASED ON GPU
     ClothConfig clothConfig3;
-    clothConfig3.widthSegments = 55;
-    clothConfig3.heightSegments = 55;
+    clothConfig3.widthSegments = state.gpuInfo.clothResolution[2];
+    clothConfig3.heightSegments = state.gpuInfo.clothResolution[2];
     clothConfig3.segmentLength = 0.12f;
     clothConfig3.startX = -3.3f;
     clothConfig3.startY = 31.0f;
@@ -208,8 +253,14 @@ int main() {
 
     // Set update callback
     app.SetUpdateCallback([&](float deltaTime) {
+        // Clamp deltaTime to avoid physics explosion on lag spikes
+        if (deltaTime > 0.1f) {
+            deltaTime = 0.1f;
+        }
+
         HandleInput(state, deltaTime);
 
+        // PHYSICS ENABLED: Optimized for Intel UHD 620 with batch dispatch
         // Update cloth drop timers and release cloths when it's time to fall
         for (size_t i = 0; i < state.cloths.size(); i++) {
             if (!state.clothDropped[i]) {
@@ -220,7 +271,7 @@ int main() {
 
                 if (state.clothDropTimers[i] >= dropTime) {
                     state.clothDropped[i] = true;
-                    
+
                     // Unpin particles for this cloth on GPU
                     size_t particleOffset = state.clothParticleOffsets[i];
                     state.physicsWorld.SetParticlesPinned(
@@ -229,7 +280,7 @@ int main() {
             }
         }
 
-        // Update GPU physics simulation
+        // Update GPU physics simulation (BATCH DISPATCH enabled)
         state.physicsWorld.Update(deltaTime);
     });
 

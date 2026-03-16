@@ -161,25 +161,13 @@ void ClothMesh::Unbind() const {
     glBindVertexArray(0);
 }
 
-void ClothMesh::Draw(Renderer& renderer, const Shader& shader) {
+void ClothMesh::Draw(const Shader& shader) {
     if (m_GPUBased && m_ParticleBuffer) {
         // Bind buffer mỗi frame (phòng trường hợp buffer ID thay đổi)
         BindForGPURendering();
-        
-        // Debug: Check for OpenGL errors
-        GLenum err = glGetError();
-        if (err != GL_NO_ERROR) {
-            std::cerr << "[ClothMesh::Draw] OpenGL ERROR before draw: " << err << std::endl;
-        }
-        
+
         glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(m_Indices.size()), GL_UNSIGNED_INT, 0);
-        
-        // Check for draw errors
-        err = glGetError();
-        if (err != GL_NO_ERROR) {
-            std::cerr << "[ClothMesh::Draw] OpenGL ERROR after draw: " << err << std::endl;
-        }
-        
+
         Unbind();
     } else {
         // CPU-based rendering (legacy)
@@ -191,7 +179,7 @@ void ClothMesh::Draw(Renderer& renderer, const Shader& shader) {
     }
 }
 
-void ClothMesh::DrawWireframe(Renderer& renderer, const Shader& shader) {
+void ClothMesh::DrawWireframe(const Shader& shader) {
     if (m_GPUBased && m_ParticleBuffer) {
         BindForGPURendering();
         glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);

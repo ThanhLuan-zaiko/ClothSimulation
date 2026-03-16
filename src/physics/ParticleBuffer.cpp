@@ -8,10 +8,15 @@ namespace cloth {
 ParticleBuffer::ParticleBuffer()
     : m_Buffer(0),
       m_NumParticles(0),
-      m_Initialized(false) {
+      m_Initialized(false),
+      m_MappedPtr(nullptr),
+      m_IsPersistentMapped(false) {
 }
 
 ParticleBuffer::~ParticleBuffer() {
+    if (m_IsPersistentMapped && m_MappedPtr) {
+        glUnmapNamedBuffer(m_Buffer);
+    }
     if (m_Buffer != 0) {
         glDeleteBuffers(1, &m_Buffer);
     }
@@ -26,15 +31,24 @@ void ParticleBuffer::Initialize(size_t numParticles) {
     // Calculate buffer size
     GLsizeiptr bufferSize = sizeof(ParticleData) * numParticles;
 
-    // Initialize buffer (binding point 0)
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_Buffer);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, bufferSize, nullptr, GL_DYNAMIC_COPY);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    // PERSISTENT MAPPING: Use glNamedBufferStorage for better performance
+    // This avoids CPU-GPU sync overhead on every update
+    glNamedBufferStorage(m_Buffer, bufferSize, nullptr,
+        GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT);
+    
+    // Map the buffer persistently
+    m_MappedPtr = glMapNamedBufferRange(m_Buffer, 0, bufferSize,
+        GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_FLUSH_EXPLICIT_BIT);
+    
+    m_IsPersistentMapped = (m_MappedPtr != nullptr);
+    
+    if (!m_IsPersistentMapped) {
+        std::cout << "[ParticleBuffer] Persistent mapping failed, falling back to traditional method" << std::endl;
+        // Fallback to traditional method
+        glNamedBufferData(m_Buffer, bufferSize, nullptr, GL_DYNAMIC_COPY);
+    }
 
     m_Initialized = true;
-
-    std::cout << "[ParticleBuffer] Initialized " << numParticles << " particles ("
-              << (bufferSize / 1024 / 1024) << " MB, interleaved)" << std::endl;
 }
 
 void ParticleBuffer::UploadData(const std::vector<ParticleData>& particles) {
@@ -43,12 +57,14 @@ void ParticleBuffer::UploadData(const std::vector<ParticleData>& particles) {
     size_t count = std::min(particles.size(), m_NumParticles);
     GLsizeiptr bufferSize = sizeof(ParticleData) * count;
 
-    // Upload all particle data (binding point 0)
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_Buffer);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, bufferSize, particles.data());
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-
-    std::cout << "[ParticleBuffer] Uploaded " << count << " particles to GPU (interleaved)" << std::endl;
+    if (m_IsPersistentMapped && m_MappedPtr) {
+        // PERSISTENT MAPPING: Direct memcpy to mapped memory
+        memcpy(m_MappedPtr, particles.data(), bufferSize);
+        glFlushMappedNamedBufferRange(m_Buffer, 0, bufferSize);
+    } else {
+        // Fallback: Traditional DSA method
+        glNamedBufferSubData(m_Buffer, 0, bufferSize, particles.data());
+    }
 }
 
 void ParticleBuffer::UploadSubset(size_t offset, size_t count, const std::vector<ParticleData>& particles) {
@@ -58,10 +74,15 @@ void ParticleBuffer::UploadSubset(size_t offset, size_t count, const std::vector
     GLsizeiptr bufferSize = sizeof(ParticleData) * uploadCount;
     GLsizeiptr bufferOffset = sizeof(ParticleData) * offset;
 
-    // Upload subset of particle data
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_Buffer);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, bufferOffset, bufferSize, particles.data());
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    if (m_IsPersistentMapped && m_MappedPtr) {
+        // PERSISTENT MAPPING: Direct memcpy to offset in mapped memory
+        void* destPtr = static_cast<char*>(m_MappedPtr) + bufferOffset;
+        memcpy(destPtr, particles.data(), bufferSize);
+        glFlushMappedNamedBufferRange(m_Buffer, bufferOffset, bufferSize);
+    } else {
+        // Fallback: Traditional DSA method
+        glNamedBufferSubData(m_Buffer, bufferOffset, bufferSize, particles.data());
+    }
 }
 
 void ParticleBuffer::Bind() const {
@@ -80,17 +101,13 @@ std::vector<ParticleData> ParticleBuffer::DownloadData() const {
 
     std::vector<ParticleData> particles(m_NumParticles);
 
-    // Map buffer to read data
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_Buffer);
-    ParticleData* mappedData = static_cast<ParticleData*>(glMapBuffer(GL_SHADER_STORAGE_BUFFER, GL_READ_ONLY));
-
-    if (mappedData) {
-        memcpy(particles.data(), mappedData, sizeof(ParticleData) * m_NumParticles);
+    if (m_IsPersistentMapped && m_MappedPtr) {
+        // Copy from persistent mapped buffer
+        memcpy(particles.data(), m_MappedPtr, sizeof(ParticleData) * m_NumParticles);
+    } else {
+        // Fallback: Use DSA to get data
+        glGetNamedBufferSubData(m_Buffer, 0, sizeof(ParticleData) * m_NumParticles, particles.data());
     }
-
-    // Unmap buffer
-    glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
     return particles;
 }

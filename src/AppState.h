@@ -11,6 +11,7 @@
 #include "cloth/ClothMesh.h"
 #include "world/World.h"
 #include "world/Sphere.h"
+#include "utils/GPUDetection.h"
 
 using namespace cloth;
 
@@ -18,6 +19,14 @@ namespace cloth {
 
 // Global application state
 struct AppState {
+    // GPU info (detected after OpenGL context creation)
+    GPUInfo gpuInfo;
+    bool gpuDetected;
+    QualityPreset selectedPreset;
+    
+    // Adaptive quality system
+    AdaptiveQuality adaptiveQuality;
+    
     // Camera
     Camera camera;
     float cameraYaw = -90.0f;
@@ -56,7 +65,7 @@ struct AppState {
     
     // Lazy update tracking
     glm::vec3 lastReflectionUpdatePos;  // Last camera position when reflection was updated
-    float reflectionUpdateThreshold = 2.5f;  // Min distance to trigger update (increased for better performance)
+    float reflectionUpdateThreshold = 5.0f;  // Increased threshold for better performance (was 2.5f)
     int lastTerrainTextureIndex = -1;  // Track terrain texture index
 
     // Terrain texture state
@@ -85,6 +94,8 @@ struct AppState {
     // Constructor
     AppState()
         : camera(ProjectionType::Perspective)
+        , gpuDetected(false)
+        , selectedPreset(QualityPreset::LOW)
         , clothShader(
             "#version 460 core\n"
             "layout (location = 0) in vec3 a_Position;\n"
@@ -145,6 +156,47 @@ struct AppState {
 
     // Initialize OpenGL-dependent objects (call after GL context is ready)
     void InitializeGL() {
+        // === GPU DETECTION (must be after GL context creation) ===
+        std::cout << "\n[GPU] Detecting GPU..." << std::endl;
+        gpuInfo = GPUDetector::Detect();
+        gpuDetected = true;
+        
+        std::cout << "\n=== GPU INFORMATION ===" << std::endl;
+        std::cout << "  Name: " << gpuInfo.name << std::endl;
+        std::cout << "  Vendor: " << gpuInfo.vendor << std::endl;
+        std::cout << "  OpenGL: " << gpuInfo.glVersion << std::endl;
+        std::cout << "  Detected Preset: " << GPUDetector::GetPresetName(gpuInfo.detectedPreset) << std::endl;
+        std::cout << "\n=== GPU CAPABILITIES ===" << std::endl;
+        std::cout << "  Compute Shader: " << (gpuInfo.supportsComputeShader ? "YES" : "NO") << std::endl;
+        std::cout << "  SSBO: " << (gpuInfo.supportsSSBO ? "YES" : "NO") << std::endl;
+        std::cout << "  Persistent Mapping: " << (gpuInfo.supportsPersistentMapping ? "YES" : "NO") << std::endl;
+        std::cout << "\n=== PHYSICS SETTINGS ===" << std::endl;
+        std::cout << "  Iterations: " << gpuInfo.physicsIterations << std::endl;
+        std::cout << "  Collision Substeps: " << gpuInfo.collisionSubsteps << std::endl;
+        std::cout << "  Work Group Size: " << gpuInfo.workGroupSize << std::endl;
+        std::cout << "  Batch Count: " << gpuInfo.batchCount << std::endl;
+        std::cout << "\n=== CLOTH RESOLUTION ===" << std::endl;
+        std::cout << "  Cloth 1: " << gpuInfo.clothResolution[0] << "x" << gpuInfo.clothResolution[0] << std::endl;
+        std::cout << "  Cloth 2: " << gpuInfo.clothResolution[1] << "x" << gpuInfo.clothResolution[1] << std::endl;
+        std::cout << "  Cloth 3: " << gpuInfo.clothResolution[2] << "x" << gpuInfo.clothResolution[2] << std::endl;
+
+        // === RUN BENCHMARK ===
+        GPUDetector::RunBenchmark(gpuInfo);
+
+        // === SHOW QUALITY MENU ===
+        selectedPreset = GPUDetector::ShowQualityMenu(gpuInfo);
+
+        // Apply selected preset
+        GPUDetector::ApplyPresetSettings(gpuInfo, selectedPreset);
+
+        std::cout << "\n[GPU] Using preset: " << GPUDetector::GetPresetName(selectedPreset) << std::endl;
+        std::cout << "[GPU] Starting simulation...\n" << std::endl;
+
+        // === INITIALIZE ADAPTIVE QUALITY ===
+        adaptiveQuality.Initialize(selectedPreset);
+        adaptiveQuality.SetEnabled(true);
+        std::cout << "[AdaptiveQuality] Enabled - will auto-adjust to maintain 60 FPS" << std::endl;
+
         // Gigantic 3m radius mirror sphere
         mirrorSphere.SetRadius(3.0f);
         mirrorSphere.Initialize();
@@ -152,22 +204,23 @@ struct AppState {
         mirrorSphere.SetColor(glm::vec3(1.0f, 1.0f, 1.0f));
 
         // Initialize reflection cubemap (AFTER GL context is ready!)
-        // 512x512 is a good balance between quality and performance
-        reflectionCubemap = new ReflectionCubemap(512);
+        // Reduced to 256x256 for better performance (was 512)
+        reflectionCubemap = new ReflectionCubemap(256);
 
         // Initialize lazy update tracking
         lastReflectionUpdatePos = camera.GetPosition();
         lastTerrainTextureIndex = -1;
 
         // Initialize GPU physics world
+        // Settings will be overridden by GPU detection in main.cpp
         GPUPhysicsConfig config;
         config.gravity = glm::vec3(0.0f, -9.81f, 0.0f);
         config.damping = 0.98f;
-        config.iterations = 5;
+        config.iterations = 2;  // Default (will be overridden by GPU detection)
         config.collisionMargin = 0.05f;
         config.dampingFactor = 0.85f;
         config.frictionFactor = 0.92f;
-        config.collisionSubsteps = 2;
+        config.collisionSubsteps = 1;  // Default (will be overridden by GPU detection)
         physicsWorld.Initialize(config);
 
         // Set collision sphere in physics world

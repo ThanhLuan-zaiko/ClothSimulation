@@ -69,6 +69,10 @@ public:
     // Configuration
     void SetConfig(const GPUPhysicsConfig& config) { m_Config = config; UpdateUniforms(1.0f / 60.0f); }
     const GPUPhysicsConfig& GetConfig() const { return m_Config; }
+    
+    // Set batch count for GPU dispatch (for TDR prevention on Intel GPU)
+    void SetBatchCount(unsigned int batchCount) { m_BatchSize = batchCount; }
+    unsigned int GetBatchCount() const { return m_BatchSize; }
 
     // Collision setup
     void SetCollisionSphere(const glm::vec3& center, float radius);
@@ -117,6 +121,14 @@ private:
 
     // Work group size (from compute shader)
     unsigned int m_WorkGroupSize;
+
+    // Batch dispatch for Intel GPU (prevent TDR timeout)
+    static const unsigned int NUM_BATCHES = 4;  // Split dispatch into 4 batches
+    unsigned int m_BatchSize;
+
+    // Uniform block indices (cached after initialization)
+    int m_PhysicsParamsBlockIndex;
+    int m_CollisionParamsBlockIndex;
 
     // Tracking
     size_t m_TotalParticles;

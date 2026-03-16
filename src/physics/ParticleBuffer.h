@@ -64,10 +64,18 @@ public:
     // Get buffer size in bytes
     size_t GetBufferSize() const { return m_NumParticles * sizeof(ParticleData); }
 
+    // Persistent mapping support
+    void* GetMappedPtr() const { return m_MappedPtr; }
+    bool IsPersistentMapped() const { return m_IsPersistentMapped; }
+
 private:
     unsigned int m_Buffer;    // Single interleaved SSBO
     size_t m_NumParticles;
     bool m_Initialized;
+    
+    // Persistent mapping
+    void* m_MappedPtr;
+    bool m_IsPersistentMapped;
 };
 
 } // namespace cloth

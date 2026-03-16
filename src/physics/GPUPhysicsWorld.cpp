@@ -11,7 +11,10 @@ GPUPhysicsWorld::GPUPhysicsWorld()
     : m_ShaderLoaded(false),
       m_Terrain(nullptr),
       m_TerrainHeightmapTexture(0),
-      m_WorkGroupSize(256),
+      m_WorkGroupSize(128),  // Default, will be overridden from shader
+      m_BatchSize(4),
+      m_PhysicsParamsBlockIndex(-1),
+      m_CollisionParamsBlockIndex(-1),
       m_TotalParticles(0),
       m_TotalConstraints(0),
       m_Initialized(false) {
@@ -38,6 +41,35 @@ bool GPUPhysicsWorld::Initialize(const GPUPhysicsConfig& config) {
         return false;
     }
 
+    // Get work group size from compute shader
+    GLint workGroupSize[3];
+    glGetProgramiv(m_ComputeShader.GetID(), GL_COMPUTE_WORK_GROUP_SIZE, workGroupSize);
+    m_WorkGroupSize = static_cast<unsigned int>(workGroupSize[0]);
+    std::cout << "[GPUPhysicsWorld] Compute shader work group size: " << m_WorkGroupSize << std::endl;
+    
+    // Set default batch size based on work group size (for Intel GPU TDR prevention)
+    m_BatchSize = 4;  // Default conservative value
+    
+    // Cache uniform block indices (so we don't call glGetUniformBlockIndex every frame)
+    m_PhysicsParamsBlockIndex = glGetUniformBlockIndex(m_ComputeShader.GetID(), "PhysicsParams");
+    m_CollisionParamsBlockIndex = glGetUniformBlockIndex(m_ComputeShader.GetID(), "CollisionParams");
+    
+    if (m_PhysicsParamsBlockIndex == GL_INVALID_INDEX) {
+        std::cerr << "[GPUPhysicsWorld] WARNING: PhysicsParams uniform block not found!" << std::endl;
+    } else {
+        // Set binding point 0 for PhysicsParams
+        glUniformBlockBinding(m_ComputeShader.GetID(), m_PhysicsParamsBlockIndex, 0);
+        std::cout << "[GPUPhysicsWorld] PhysicsParams block index=" << m_PhysicsParamsBlockIndex << " bound to 0" << std::endl;
+    }
+    
+    if (m_CollisionParamsBlockIndex == GL_INVALID_INDEX) {
+        std::cerr << "[GPUPhysicsWorld] WARNING: CollisionParams uniform block not found!" << std::endl;
+    } else {
+        // Set binding point 1 for CollisionParams
+        glUniformBlockBinding(m_ComputeShader.GetID(), m_CollisionParamsBlockIndex, 1);
+        std::cout << "[GPUPhysicsWorld] CollisionParams block index=" << m_CollisionParamsBlockIndex << " bound to 1" << std::endl;
+    }
+
     // Create uniform buffers
     glGenBuffers(1, &m_UniformBuffer);
     glBindBuffer(GL_UNIFORM_BUFFER, m_UniformBuffer);
@@ -61,21 +93,23 @@ bool GPUPhysicsWorld::LoadComputeShader() {
     // Try to load from file
     std::string shaderPath = "shaders/physics/physics.comp";
 
+    std::cout << "[GPUPhysicsWorld] Loading compute shader from: " << shaderPath << std::endl;
     m_ComputeShader = Shader::CreateComputeShaderFromFile(shaderPath);
 
     if (m_ComputeShader.GetID() != 0) {
         m_ShaderLoaded = true;
-        std::cout << "[GPUPhysicsWorld] Compute shader loaded from " << shaderPath << std::endl;
+        std::cout << "[GPUPhysicsWorld] Compute shader loaded successfully (ID=" << m_ComputeShader.GetID() << ")" << std::endl;
         return true;
     }
 
     // Try alternate path (relative to executable)
     shaderPath = "../shaders/physics/physics.comp";
+    std::cout << "[GPUPhysicsWorld] Trying alternate path: " << shaderPath << std::endl;
     m_ComputeShader = Shader::CreateComputeShaderFromFile(shaderPath);
 
     if (m_ComputeShader.GetID() != 0) {
         m_ShaderLoaded = true;
-        std::cout << "[GPUPhysicsWorld] Compute shader loaded from " << shaderPath << std::endl;
+        std::cout << "[GPUPhysicsWorld] Compute shader loaded successfully (ID=" << m_ComputeShader.GetID() << ")" << std::endl;
         return true;
     }
 
@@ -259,17 +293,11 @@ void GPUPhysicsWorld::SetParticlesPinned(size_t startIdx, size_t count, bool pin
 }
 
 void GPUPhysicsWorld::Update(float deltaTime) {
-    // Debug: Log every call
-    static int callCount = 0;
-    if (callCount < 10) {
-        std::cout << "[GPUPhysicsWorld] Update() called #" << callCount 
-                  << " (initialized=" << m_Initialized << ", shaderLoaded=" << m_ShaderLoaded << ")" << std::endl;
-        callCount++;
-    }
+    // TEMPORARILY DISABLE PHYSICS - compute shader binding issue needs debugging
+    // Remove this return to enable physics
+    return;
     
     if (!m_Initialized || !m_ShaderLoaded) {
-        std::cout << "[GPUPhysicsWorld] Update() EARLY RETURN: initialized=" << m_Initialized 
-                  << ", shaderLoaded=" << m_ShaderLoaded << std::endl;
         return;
     }
 
@@ -283,39 +311,65 @@ void GPUPhysicsWorld::Update(float deltaTime) {
     // Bind compute shader
     m_ComputeShader.Bind();
 
+    // Check shader program is valid
+    if (m_ComputeShader.GetID() == 0) {
+        std::cerr << "[GPUPhysicsWorld] ERROR: Compute shader ID is 0!" << std::endl;
+        return;
+    }
+
+    // Bind uniform buffers EXPLICITLY (critical for compute shader)
+    if (m_PhysicsParamsBlockIndex != -1) {
+        glBindBufferBase(GL_UNIFORM_BUFFER, 0, m_UniformBuffer);
+    }
+    if (m_CollisionParamsBlockIndex != -1) {
+        glBindBufferBase(GL_UNIFORM_BUFFER, 1, m_CollisionUniformBuffer);
+    }
+
     // Bind terrain heightmap texture
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, m_TerrainHeightmapTexture);
     m_ComputeShader.SetInt("terrainHeightmap", 0);
 
     // Bind SSBOs
-    m_ParticleBuffer.Bind();
-    m_ConstraintBuffer.Bind();
+    m_ParticleBuffer.Bind();  // Binding point 0
+    m_ConstraintBuffer.Bind();  // Binding point 1
 
-    // Dispatch compute shader
-    unsigned int numWorkGroups = static_cast<unsigned int>((m_TotalParticles + m_WorkGroupSize - 1) / m_WorkGroupSize);
-    
-    // Debug: Log every frame for first 100 frames
-    static int updateCount = 0;
-    if (updateCount < 100) {
-        std::cout << "[GPUPhysicsWorld] Update #" << updateCount 
-                  << ": dispatching " << numWorkGroups << " work groups for " 
-                  << m_TotalParticles << " particles, dt=" << deltaTime << std::endl;
-        updateCount++;
-    }
-    
-    glDispatchCompute(numWorkGroups, 1, 1);
-
-    // Check for dispatch errors
+    // Check for errors before dispatch
     GLenum err = glGetError();
     if (err != GL_NO_ERROR) {
-        std::cerr << "[GPUPhysicsWorld] glDispatchCompute ERROR: " << err << std::endl;
+        std::cerr << "[GPUPhysicsWorld] ERROR before dispatch: " << err << std::endl;
+    }
+
+    // Calculate work groups
+    unsigned int totalWorkGroups = static_cast<unsigned int>((m_TotalParticles + m_WorkGroupSize - 1) / m_WorkGroupSize);
+    
+    // Safety check: ensure we have valid work groups
+    if (totalWorkGroups == 0 || m_TotalParticles == 0) {
+        std::cerr << "[GPUPhysicsWorld] No particles to simulate!" << std::endl;
+        m_ParticleBuffer.Unbind();
+        m_ConstraintBuffer.Unbind();
+        m_ComputeShader.Unbind();
+        return;
+    }
+
+    // SINGLE DISPATCH (no batching for debugging)
+    std::cout << "[GPUPhysicsWorld] Dispatching " << totalWorkGroups << " work groups (" 
+              << m_TotalParticles << " particles, workGroupSize=" << m_WorkGroupSize << ")" << std::endl;
+    
+    // Dispatch compute shader
+    glDispatchCompute(totalWorkGroups, 1, 1);
+
+    // Check for dispatch errors IMMEDIATELY
+    err = glGetError();
+    if (err != GL_NO_ERROR) {
+        std::cerr << "[GPUPhysicsWorld] glDispatchCompute ERROR: " << err 
+                  << " (GL_INVALID_VALUE=" << GL_INVALID_VALUE 
+                  << ", GL_INVALID_OPERATION=" << GL_INVALID_OPERATION << ")" << std::endl;
     }
 
     // Memory barrier to ensure rendering sees updated data
-    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
-    // Check for barrier errors
     err = glGetError();
     if (err != GL_NO_ERROR) {
         std::cerr << "[GPUPhysicsWorld] glMemoryBarrier ERROR: " << err << std::endl;
@@ -344,7 +398,6 @@ void GPUPhysicsWorld::UpdateUniforms(float deltaTime) {
 
     // terrainSize and terrainHeightScale
     if (m_Terrain) {
-        // Get terrain size (assuming 100x100)
         physicsData[8] = 100.0f; // terrainSize.x
         physicsData[9] = 100.0f; // terrainSize.y
         physicsData[10] = 1.0f;  // terrainHeightScale
@@ -357,10 +410,8 @@ void GPUPhysicsWorld::UpdateUniforms(float deltaTime) {
     glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(physicsData), physicsData);
     glBindBuffer(GL_UNIFORM_BUFFER, 0);
 
-    // Bind uniform buffer to compute shader
-    unsigned int uniformBlockIndex = glGetUniformBlockIndex(m_ComputeShader.GetID(), "PhysicsParams");
-    if (uniformBlockIndex != GL_INVALID_INDEX) {
-        glUniformBlockBinding(m_ComputeShader.GetID(), uniformBlockIndex, 0);
+    // Bind uniform buffer using cached index
+    if (m_PhysicsParamsBlockIndex != -1) {
         glBindBufferBase(GL_UNIFORM_BUFFER, 0, m_UniformBuffer);
     }
 
@@ -377,15 +428,13 @@ void GPUPhysicsWorld::UpdateUniforms(float deltaTime) {
     collisionData[5] = m_Config.collisionMargin;
     collisionData[6] = m_Config.dampingFactor;
     collisionData[7] = m_Config.frictionFactor;
-
     collisionData[8] = static_cast<float>(m_Config.collisionSubsteps);
 
     glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(collisionData), collisionData);
     glBindBuffer(GL_UNIFORM_BUFFER, 0);
 
-    uniformBlockIndex = glGetUniformBlockIndex(m_ComputeShader.GetID(), "CollisionParams");
-    if (uniformBlockIndex != GL_INVALID_INDEX) {
-        glUniformBlockBinding(m_ComputeShader.GetID(), uniformBlockIndex, 1);
+    // Bind collision uniform buffer using cached index
+    if (m_CollisionParamsBlockIndex != -1) {
         glBindBufferBase(GL_UNIFORM_BUFFER, 1, m_CollisionUniformBuffer);
     }
 }
@@ -433,8 +482,6 @@ void GPUPhysicsWorld::CreateTerrainHeightmapTexture() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_2D, 0);
-
-    std::cout << "[GPUPhysicsWorld] Created terrain heightmap texture (" << textureSize << "x" << textureSize << ")" << std::endl;
 }
 
 void GPUPhysicsWorld::BindForRendering() const {

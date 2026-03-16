@@ -1,9 +1,16 @@
 #include "Application.h"
+#include "AppState.h"
 #include <glad/glad.h>
 #include <iostream>
+#include "utils/GPUDetection.h"
 
 // Global window handle cho Input
 GLFWwindow* g_WindowHandle = nullptr;
+
+// Global AppState pointer (defined in main.cpp)
+namespace cloth {
+    extern AppState* g_State;
+}
 
 namespace cloth {
 
@@ -47,6 +54,11 @@ void Application::Run() {
         // Update
         if (m_UpdateCallback) {
             m_UpdateCallback(m_DeltaTime);
+        }
+
+        // Update adaptive quality system
+        if (g_State && g_State->adaptiveQuality.IsEnabled()) {
+            g_State->adaptiveQuality.Update(m_DeltaTime, static_cast<float>(glfwGetTime()));
         }
 
         // Render

@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Cloth.h"
-#include "../renderer/Renderer.h"
 #include <vector>
 #include <glm/glm.hpp>
 
@@ -19,8 +18,8 @@ public:
     void Update();
 
     // GPU-based rendering (reads directly from SSBO)
-    void Draw(Renderer& renderer, const Shader& shader);
-    void DrawWireframe(Renderer& renderer, const Shader& shader);
+    void Draw(const Shader& shader);
+    void DrawWireframe(const Shader& shader);
 
     // GPU-specific methods
     void SetParticleBuffer(const ParticleBuffer* buffer, size_t offset = 0);

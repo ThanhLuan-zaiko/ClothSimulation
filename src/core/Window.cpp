@@ -29,7 +29,7 @@ Window::Window(const WindowProps& props) : m_Props(props) {
     }
 
     glfwMakeContextCurrent(m_Window);
-    glfwSwapInterval(1); // Enable vsync
+    glfwSwapInterval(0); // Disable vsync - prevents black screen issue
 }
 
 Window::~Window() {

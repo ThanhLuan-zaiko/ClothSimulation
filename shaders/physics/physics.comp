@@ -2,8 +2,9 @@
 #extension GL_ARB_compute_shader : require
 #extension GL_ARB_shader_storage_buffer_object : require
 
-// Work group size - optimized for most GPUs
-layout(local_size_x = 256) in;
+// Work group size - REDUCED to 128 for Intel UHD 620 (has 24 EUs)
+// 256 was too aggressive for integrated GPU
+layout(local_size_x = 128) in;
 
 // ============================================================================
 // STRUCT DEFINITIONS (must be defined before SSBO blocks)
