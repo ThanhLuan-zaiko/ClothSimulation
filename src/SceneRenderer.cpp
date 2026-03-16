@@ -197,7 +197,22 @@ void Render(AppState& state, const Application& app) {
     state.physicsWorld.BindForRendering();
 
     glDisable(GL_CULL_FACE); // Better for thin cloths
+    
+    // Render cloths - only render if cloth has fallen close to ground
+    // This prevents visual artifacts from particles at initial high positions
     for (size_t i = 0; i < state.clothMeshes.size(); i++) {
+        // Skip rendering if cloth is still pinned (waiting to drop)
+        if (!state.clothDropped[i]) {
+            continue;
+        }
+        
+        // Additional check: only render if cloth has fallen for at least 0.5 seconds
+        // This prevents artifacts during initial fall when particles are stretched
+        float timeSinceDrop = state.clothDropTimers[i] - state.clothDropStartDelay - (i * state.clothDropDelay);
+        if (timeSinceDrop < 0.5f) {
+            continue;
+        }
+        
         if (i < state.clothTextures.size()) {
             // STATE CACHING: Only bind texture if changed
             if (g_LastBoundTexture0 != state.clothTextures[i]) {

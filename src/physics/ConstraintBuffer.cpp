@@ -25,6 +25,17 @@ ConstraintBuffer::~ConstraintBuffer() {
 void ConstraintBuffer::Initialize(size_t numConstraints) {
     m_NumConstraints = numConstraints;
 
+    // Delete old buffer if it exists (prevent leak when re-initializing)
+    if (m_Buffer != 0) {
+        if (m_IsPersistentMapped && m_MappedPtr) {
+            glUnmapNamedBuffer(m_Buffer);
+            m_MappedPtr = nullptr;
+            m_IsPersistentMapped = false;
+        }
+        glDeleteBuffers(1, &m_Buffer);
+        m_Buffer = 0;
+    }
+
     // Generate single interleaved buffer
     glGenBuffers(1, &m_Buffer);
 
@@ -84,7 +95,9 @@ void ConstraintBuffer::UploadSubset(size_t offset, size_t count, const std::vect
 }
 
 void ConstraintBuffer::Bind() const {
-    if (!m_Initialized) return;
+    if (!m_Initialized || m_Buffer == 0) {
+        return;  // Don't bind invalid buffers
+    }
 
     // Bind interleaved buffer to binding point 1
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, m_Buffer);

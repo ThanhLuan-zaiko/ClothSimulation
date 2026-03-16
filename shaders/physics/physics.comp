@@ -42,7 +42,9 @@ layout(std430, binding = 1) buffer ConstraintBufferSSBO {
 // UNIFORMS
 // ============================================================================
 
-uniform PhysicsParams {
+// NOTE: Uniform buffers use binding points 2 and 3 to avoid conflict with SSBOs
+// (SSBOs use binding points 0 and 1)
+layout(std140, binding = 2) uniform PhysicsParams {
     vec3 gravity;
     float deltaTime;
     float damping;
@@ -54,7 +56,7 @@ uniform PhysicsParams {
 };
 
 // Collision parameters
-uniform CollisionParams {
+layout(std140, binding = 3) uniform CollisionParams {
     vec3 sphereCenter;
     float sphereRadius;
     float groundLevel;
@@ -85,28 +87,29 @@ const int CONSTRAINT_BEND = 2;
 // ============================================================================
 
 // Shared memory for particle positions (faster than global memory)
-shared vec3 sharedPositions[512];
-shared vec3 sharedPrevPositions[512];
-shared float sharedPinned[512];
+// Use work-group-size aligned array (128) to save shared memory
+shared vec3 sharedPositions[128];
+shared vec3 sharedPrevPositions[128];
+shared float sharedPinned[128];
 
 // ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
 
-// Get terrain height at world position (x, z)
+// Get terrain height at world position (x, z) - SIMPLIFIED
 float getTerrainHeight(float x, float z) {
     // Normalize coordinates to [0, 1] range for texture lookup
     float halfSize = terrainSize.x * 0.5f;
     float u = (x + halfSize) / terrainSize.x;
     float v = (z + halfSize) / terrainSize.y;
-    
-    // Clamp to [0, 1]
+
+    // Clamp to [0, 1] - CRITICAL to prevent out-of-bounds texture access
     u = clamp(u, 0.0f, 1.0f);
     v = clamp(v, 0.0f, 1.0f);
-    
-    // Sample heightmap (R channel)
-    float height = texture(terrainHeightmap, vec2(u, v)).r;
-    
+
+    // Sample heightmap (R channel) - use textureLod for explicit LOD
+    float height = textureLod(terrainHeightmap, vec2(u, v), 0.0).r;
+
     // Apply height scale and offset (center around 0)
     return (height - 0.5f) * terrainHeightScale;
 }
@@ -286,71 +289,41 @@ void handleSphereCollision(uint idx) {
 void handleTerrainCollision(uint idx) {
     if (idx >= numParticles) return;
     if (particles[idx].velocity.w >= 0.5f) return; // Skip pinned
-    
+
     vec3 pos = particles[idx].position.xyz;
     vec3 prevPos = particles[idx].prevPosition.xyz;
-    
+
     // Check if within terrain bounds
     if (!isInTerrainBounds(pos.x, pos.z)) return;
-    
+
     // Get terrain height and normal
     float terrainHeight = getTerrainHeight(pos.x, pos.z);
     vec3 terrainNormal = getTerrainNormal(pos.x, pos.z);
-    
-    // Continuous collision detection with sub-steps
-    vec3 startPos = prevPos;
-    vec3 endPos = pos;
-    int substeps = collisionSubsteps;
-    vec3 stepVec = (endPos - startPos) / float(substeps);
-    
-    bool collisionDetected = false;
-    vec3 collisionNormal = terrainNormal;
-    float collisionHeight = terrainHeight;
-    
-    for (int step = 1; step <= substeps; step++) {
-        vec3 checkPos = startPos + stepVec * float(step);
-        
-        if (isInTerrainBounds(checkPos.x, checkPos.z)) {
-            float checkHeight = getTerrainHeight(checkPos.x, checkPos.z);
-            
-            if (checkPos.y < checkHeight + collisionMargin) {
-                collisionDetected = true;
-                collisionNormal = getTerrainNormal(checkPos.x, checkPos.z);
-                collisionHeight = checkHeight;
-                break;
-            }
-        }
-    }
-    
-    // Apply collision response
-    float targetHeight = collisionHeight + collisionMargin;
-    
-    if (collisionDetected || pos.y < targetHeight) {
+
+    // SIMPLIFIED: Single-step collision (no sub-steps to reduce texture lookups)
+    float targetHeight = terrainHeight + collisionMargin;
+
+    if (pos.y < targetHeight) {
         vec3 newPos = pos;
         newPos.y = max(pos.y, targetHeight);
-        
+
         vec3 velocity = pos - prevPos;
-        float normalVel = dot(velocity, collisionNormal);
-        
+        float normalVel = dot(velocity, terrainNormal);
+
         // Only apply damping if moving toward terrain
         if (normalVel < 0.0f) {
-            vec3 normalComponent = normalVel * collisionNormal;
+            vec3 normalComponent = normalVel * terrainNormal;
             vec3 tangentialComponent = velocity - normalComponent;
-            
+
             // Apply friction
             tangentialComponent *= frictionFactor;
             normalComponent *= dampingFactor;
-            
+
             vec3 newVelocity = tangentialComponent + normalComponent;
             particles[idx].prevPosition = vec4(newPos - newVelocity * deltaTime, 0.0f);
         }
-        
+
         particles[idx].position = vec4(newPos, particles[idx].position.w);
-        
-        // Also constrain previous position
-        if (particles[idx].prevPosition.y < targetHeight) {
-            particles[idx].prevPosition.y = targetHeight;
-        }
     }
 }
 

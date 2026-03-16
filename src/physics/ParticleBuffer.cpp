@@ -25,6 +25,17 @@ ParticleBuffer::~ParticleBuffer() {
 void ParticleBuffer::Initialize(size_t numParticles) {
     m_NumParticles = numParticles;
 
+    // Delete old buffer if it exists (prevent leak when re-initializing)
+    if (m_Buffer != 0) {
+        if (m_IsPersistentMapped && m_MappedPtr) {
+            glUnmapNamedBuffer(m_Buffer);
+            m_MappedPtr = nullptr;
+            m_IsPersistentMapped = false;
+        }
+        glDeleteBuffers(1, &m_Buffer);
+        m_Buffer = 0;
+    }
+
     // Generate single interleaved buffer
     glGenBuffers(1, &m_Buffer);
 
@@ -86,7 +97,9 @@ void ParticleBuffer::UploadSubset(size_t offset, size_t count, const std::vector
 }
 
 void ParticleBuffer::Bind() const {
-    if (!m_Initialized) return;
+    if (!m_Initialized || m_Buffer == 0) {
+        return;  // Don't bind invalid buffers
+    }
 
     // Bind interleaved buffer to binding point 0
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, m_Buffer);

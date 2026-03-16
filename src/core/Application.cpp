@@ -50,6 +50,10 @@ void Application::Run() {
         // Clear buffers - dark blue background
         glClearColor(0.1f, 0.1f, 0.2f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        
+        // Enable depth test with proper depth function
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LESS);  // Ensure proper depth comparison
 
         // Update
         if (m_UpdateCallback) {
