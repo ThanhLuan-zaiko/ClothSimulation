@@ -1,6 +1,7 @@
 #include "Renderer.h"
 #include "world/Terrain.h"
 #include "AppState.h"
+#include <future>  // For async texture loading
 
 #ifdef _WIN32
     #define WIN32_LEAN_AND_MEAN
@@ -145,21 +146,37 @@ static std::string GetAssetPath(const std::string& relativePath) {
 }
 
 void LoadClothTextures(AppState& state) {
-    std::cout << "=== Loading cloth textures ===" << std::endl;
     std::vector<std::string> clothTexturePaths = {
         GetAssetPath("assets/cloths/denim_fabric_diff_4k.jpg"),
         GetAssetPath("assets/cloths/fabric_pattern_07_col_1_4k.png"),
         GetAssetPath("assets/cloths/floral_jacquard_diff_4k.jpg")
     };
 
-    for (size_t i = 0; i < clothTexturePaths.size() && i < state.clothMeshes.size(); i++) {
+    // ASYNC TEXTURE LOADING: Load textures in parallel
+    std::vector<std::future<std::pair<unsigned char*, int>>> loadFutures;
+
+    // Start async loading for each texture
+    for (size_t i = 0; i < clothTexturePaths.size(); i++) {
+        loadFutures.push_back(std::async(std::launch::async, [path = clothTexturePaths[i]]() {
+            stbi_set_flip_vertically_on_load(1);
+            int w, h, c;
+            unsigned char* data = stbi_load(path.c_str(), &w, &h, &c, 0);
+            return std::make_pair(data, w * 10000 + h * 100 + c);
+        }));
+    }
+
+    // Create OpenGL textures and upload data
+    for (size_t i = 0; i < loadFutures.size() && i < state.clothMeshes.size(); i++) {
+        auto result = loadFutures[i].get();
+        unsigned char* data = result.first;
+        int packed = result.second;
+        int width = packed / 10000;
+        int height = (packed % 10000) / 100;
+        int channels = packed % 100;
+
         unsigned int textureID;
         glGenTextures(1, &textureID);
         glBindTexture(GL_TEXTURE_2D, textureID);
-
-        stbi_set_flip_vertically_on_load(1);
-        int width, height, channels;
-        unsigned char* data = stbi_load(clothTexturePaths[i].c_str(), &width, &height, &channels, 0);
 
         if (data) {
             GLenum format = (channels == 4) ? GL_RGBA : GL_RGB;
@@ -170,15 +187,14 @@ void LoadClothTextures(AppState& state) {
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
             stbi_image_free(data);
-            std::cout << "Loaded cloth texture " << (i + 1) << ": " << width << "x" << height << std::endl;
         } else {
             std::cerr << "Failed to load cloth texture: " << clothTexturePaths[i] << std::endl;
         }
 
         state.clothTextures.push_back(textureID);
     }
+    
     state.clothTexturesLoaded = true;
-    std::cout << "=== Cloth textures loading complete ===" << std::endl;
 }
 
 void LoadTerrainTexture(AppState& state) {

@@ -10,30 +10,55 @@ ParticleBuffer::ParticleBuffer()
       m_NumParticles(0),
       m_Initialized(false),
       m_MappedPtr(nullptr),
-      m_IsPersistentMapped(false) {
+      m_MappedPtr2(nullptr),
+      m_IsPersistentMapped(false),
+      m_Buffer2(0),
+      m_IsDoubleBuffered(false),
+      m_ReadBufferIndex(0),
+      m_WriteBufferIndex(0) {
 }
 
 ParticleBuffer::~ParticleBuffer() {
+    // Unmap persistent mappings
     if (m_IsPersistentMapped && m_MappedPtr) {
         glUnmapNamedBuffer(m_Buffer);
+        m_MappedPtr = nullptr;
     }
+    if (m_IsPersistentMapped && m_MappedPtr2) {
+        glUnmapNamedBuffer(m_Buffer2);
+        m_MappedPtr2 = nullptr;
+    }
+    
+    // Delete buffers
     if (m_Buffer != 0) {
         glDeleteBuffers(1, &m_Buffer);
+    }
+    if (m_Buffer2 != 0) {
+        glDeleteBuffers(1, &m_Buffer2);
     }
 }
 
 void ParticleBuffer::Initialize(size_t numParticles) {
     m_NumParticles = numParticles;
+    m_IsDoubleBuffered = false;  // Single buffer mode
 
-    // Delete old buffer if it exists (prevent leak when re-initializing)
+    // Delete old buffers if they exist
     if (m_Buffer != 0) {
         if (m_IsPersistentMapped && m_MappedPtr) {
             glUnmapNamedBuffer(m_Buffer);
             m_MappedPtr = nullptr;
             m_IsPersistentMapped = false;
         }
+        if (m_MappedPtr2) {
+            glUnmapNamedBuffer(m_Buffer2);
+            m_MappedPtr2 = nullptr;
+        }
         glDeleteBuffers(1, &m_Buffer);
         m_Buffer = 0;
+        if (m_Buffer2 != 0) {
+            glDeleteBuffers(1, &m_Buffer2);
+            m_Buffer2 = 0;
+        }
     }
 
     // Generate single interleaved buffer
@@ -43,20 +68,69 @@ void ParticleBuffer::Initialize(size_t numParticles) {
     GLsizeiptr bufferSize = sizeof(ParticleData) * numParticles;
 
     // PERSISTENT MAPPING: Use glNamedBufferStorage for better performance
-    // This avoids CPU-GPU sync overhead on every update
     glNamedBufferStorage(m_Buffer, bufferSize, nullptr,
         GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT);
-    
+
     // Map the buffer persistently
     m_MappedPtr = glMapNamedBufferRange(m_Buffer, 0, bufferSize,
         GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_FLUSH_EXPLICIT_BIT);
-    
+
     m_IsPersistentMapped = (m_MappedPtr != nullptr);
-    
+
     if (!m_IsPersistentMapped) {
-        std::cout << "[ParticleBuffer] Persistent mapping failed, falling back to traditional method" << std::endl;
-        // Fallback to traditional method
         glNamedBufferData(m_Buffer, bufferSize, nullptr, GL_DYNAMIC_COPY);
+    }
+
+    m_Initialized = true;
+}
+
+void ParticleBuffer::InitializeDoubleBuffered(size_t numParticles) {
+    m_NumParticles = numParticles;
+    m_IsDoubleBuffered = true;
+    m_ReadBufferIndex = 0;
+    m_WriteBufferIndex = 1;
+
+    // Delete old buffers if they exist
+    if (m_Buffer != 0) {
+        if (m_IsPersistentMapped && m_MappedPtr) {
+            glUnmapNamedBuffer(m_Buffer);
+            m_MappedPtr = nullptr;
+        }
+        if (m_MappedPtr2) {
+            glUnmapNamedBuffer(m_Buffer2);
+            m_MappedPtr2 = nullptr;
+        }
+        glDeleteBuffers(1, &m_Buffer);
+        glDeleteBuffers(1, &m_Buffer2);
+    }
+
+    // Generate TWO buffers for ping-pong
+    glGenBuffers(1, &m_Buffer);
+    glGenBuffers(1, &m_Buffer2);
+
+    GLsizeiptr bufferSize = sizeof(ParticleData) * numParticles;
+
+    // Create and map first buffer
+    glNamedBufferStorage(m_Buffer, bufferSize, nullptr,
+        GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT);
+    
+    m_MappedPtr = glMapNamedBufferRange(m_Buffer, 0, bufferSize,
+        GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_FLUSH_EXPLICIT_BIT);
+
+    // Create and map second buffer
+    glNamedBufferStorage(m_Buffer2, bufferSize, nullptr,
+        GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT);
+    
+    m_MappedPtr2 = glMapNamedBufferRange(m_Buffer2, 0, bufferSize,
+        GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_FLUSH_EXPLICIT_BIT);
+
+    m_IsPersistentMapped = (m_MappedPtr != nullptr && m_MappedPtr2 != nullptr);
+
+    if (!m_IsPersistentMapped) {
+        glNamedBufferData(m_Buffer, bufferSize, nullptr, GL_DYNAMIC_COPY);
+        glNamedBufferData(m_Buffer2, bufferSize, nullptr, GL_DYNAMIC_COPY);
+        m_MappedPtr = nullptr;
+        m_MappedPtr2 = nullptr;
     }
 
     m_Initialized = true;
@@ -97,12 +171,27 @@ void ParticleBuffer::UploadSubset(size_t offset, size_t count, const std::vector
 }
 
 void ParticleBuffer::Bind() const {
-    if (!m_Initialized || m_Buffer == 0) {
-        return;  // Don't bind invalid buffers
-    }
+    if (!m_Initialized) return;
 
-    // Bind interleaved buffer to binding point 0
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, m_Buffer);
+    if (m_IsDoubleBuffered) {
+        unsigned int readBufferID = (m_ReadBufferIndex == 0) ? m_Buffer : m_Buffer2;
+        if (readBufferID != 0) {
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, readBufferID);
+        }
+    } else {
+        if (m_Buffer != 0) {
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, m_Buffer);
+        }
+    }
+}
+
+void ParticleBuffer::BindBufferIndex(unsigned int index) const {
+    if (!m_Initialized) return;
+    
+    unsigned int bufferID = (index == 0) ? m_Buffer : m_Buffer2;
+    if (bufferID != 0) {
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, bufferID);
+    }
 }
 
 void ParticleBuffer::Unbind() const {
@@ -115,14 +204,32 @@ std::vector<ParticleData> ParticleBuffer::DownloadData() const {
     std::vector<ParticleData> particles(m_NumParticles);
 
     if (m_IsPersistentMapped && m_MappedPtr) {
-        // Copy from persistent mapped buffer
-        memcpy(particles.data(), m_MappedPtr, sizeof(ParticleData) * m_NumParticles);
+        // Copy from current read buffer
+        void* srcPtr = (m_IsDoubleBuffered && m_ReadBufferIndex == 1) ? m_MappedPtr2 : m_MappedPtr;
+        memcpy(particles.data(), srcPtr, sizeof(ParticleData) * m_NumParticles);
     } else {
         // Fallback: Use DSA to get data
-        glGetNamedBufferSubData(m_Buffer, 0, sizeof(ParticleData) * m_NumParticles, particles.data());
+        unsigned int bufferID = (m_IsDoubleBuffered && m_ReadBufferIndex == 1) ? m_Buffer2 : m_Buffer;
+        glGetNamedBufferSubData(bufferID, 0, sizeof(ParticleData) * m_NumParticles, particles.data());
     }
 
     return particles;
+}
+
+unsigned int ParticleBuffer::GetBufferID(unsigned int index) const {
+    return (index == 0) ? m_Buffer : m_Buffer2;
+}
+
+void* ParticleBuffer::GetMappedPtr(unsigned int index) const {
+    return (index == 0) ? m_MappedPtr : m_MappedPtr2;
+}
+
+void ParticleBuffer::SwapBuffers() {
+    if (!m_IsDoubleBuffered) return;
+    
+    // Swap read and write indices
+    // CPU will write to the buffer that GPU just finished reading
+    std::swap(m_ReadBufferIndex, m_WriteBufferIndex);
 }
 
 } // namespace cloth

@@ -140,6 +140,35 @@ GPUCaps GPUBenchmark::QueryHardware() {
     caps.hasSSBO = (major > 4 || (major == 4 && minor >= 3));
     caps.hasPersistentMapping = (major > 4 || (major == 4 && minor >= 4));
     
+    // NEW: Check for extensions
+    const char* extensions = (const char*)glGetString(GL_EXTENSIONS);
+    if (extensions) {
+        caps.hasARBComputeShader5 = strstr(extensions, "GL_ARB_compute_shader_5") != nullptr;
+        caps.hasARBTextureGather = strstr(extensions, "GL_ARB_texture_gather") != nullptr;
+    } else {
+        caps.hasARBComputeShader5 = false;
+        caps.hasARBTextureGather = false;
+    }
+    
+    // NEW: Detect async compute based on GPU type
+    caps.hasAsyncCompute = false;  // Default to false
+    if (caps.hasARBComputeShader5) {
+        // NVIDIA RTX/GTX 16+ support async compute
+        if (caps.vendor.find("NVIDIA") != std::string::npos) {
+            if (caps.gpuName.find("RTX") != std::string::npos ||
+                caps.gpuName.find("GTX 16") != std::string::npos) {
+                caps.hasAsyncCompute = true;
+            }
+        }
+        // AMD RX series support async compute
+        else if (caps.vendor.find("AMD") != std::string::npos ||
+                 caps.gpuName.find("Radeon") != std::string::npos) {
+            if (caps.gpuName.find("RX") != std::string::npos) {
+                caps.hasAsyncCompute = true;
+            }
+        }
+    }
+    
     // Get max work group size
     GLint workGroupSize[3];
     glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_SIZE, 0, workGroupSize);

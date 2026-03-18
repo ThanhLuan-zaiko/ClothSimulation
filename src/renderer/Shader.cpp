@@ -113,6 +113,12 @@ Shader Shader::CreateComputeShaderFromFile(const std::string& computePath) {
     return shader;
 }
 
+Shader Shader::CreateComputeShaderFromSource(const std::string& computeSource) {
+    Shader shader;
+    shader.m_RendererID = shader.CreateComputeShaderProgram(computeSource);
+    return shader;
+}
+
 unsigned int Shader::CompileShader(unsigned int type, const std::string& source) {
     unsigned int id = glCreateShader(type);
     const char* src = source.c_str();
@@ -167,24 +173,24 @@ unsigned int Shader::CreateComputeShaderProgram(const std::string& computeSrc) {
 
     glAttachShader(program, cs);
     glLinkProgram(program);
-    
+
     // Check link status
     int success;
     glGetProgramiv(program, GL_LINK_STATUS, &success);
     if (!success) {
         char infoLog[512];
         glGetProgramInfoLog(program, 512, NULL, infoLog);
-        std::cerr << "ERROR: Compute shader program link failed!\n" << infoLog << std::endl;
+        std::cerr << "ERROR: Compute shader link failed:\n" << infoLog << std::endl;
     }
-    
+
     glValidateProgram(program);
-    
+
     // Check validate status
     glGetProgramiv(program, GL_VALIDATE_STATUS, &success);
     if (!success) {
         char infoLog[512];
         glGetProgramInfoLog(program, 512, NULL, infoLog);
-        std::cerr << "ERROR: Compute shader program validate failed!\n" << infoLog << std::endl;
+        std::cerr << "ERROR: Compute shader validate failed:\n" << infoLog << std::endl;
     }
 
     glDetachShader(program, cs);

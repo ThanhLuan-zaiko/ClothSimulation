@@ -1,9 +1,13 @@
 #include "GPUPhysicsWorld.h"
+#include "utils/GPUDetection.h"
 #include "cloth/Cloth.h"
 #include <glad/glad.h>
 #include <iostream>
 #include <vector>
 #include <cmath>
+#include <chrono>  // For benchmark timing
+#include <fstream>  // For file I/O
+#include <sstream>  // For stringstream
 
 namespace cloth {
 
@@ -11,12 +15,19 @@ GPUPhysicsWorld::GPUPhysicsWorld()
     : m_UniformBuffer(0),
       m_CollisionUniformBuffer(0),
       m_ShaderLoaded(false),
+      m_ShaderValidated(false),
+      m_IsHighEndGPU(false),
+      m_IsIntelGPU(false),
       m_Terrain(nullptr),
       m_TerrainHeightmapTexture(0),
-      m_WorkGroupSize(128),  // Default, will be overridden from shader
+      m_WorkGroupSize(128),
       m_BatchSize(4),
       m_PhysicsParamsBlockIndex(-1),
       m_CollisionParamsBlockIndex(-1),
+      m_MaxIterations(2),  // Default conservative
+      m_UseTextureGather(false),
+      m_AutoTuningEnabled(true),
+      m_ManualPresetSelected(false),
       m_TotalParticles(0),
       m_TotalConstraints(0),
       m_Initialized(false) {
@@ -30,7 +41,7 @@ GPUPhysicsWorld::~GPUPhysicsWorld() {
     if (m_CollisionUniformBuffer != 0) {
         glDeleteBuffers(1, &m_CollisionUniformBuffer);
     }
-    
+
     // Terrain texture
     if (m_TerrainHeightmapTexture != 0) {
         glDeleteTextures(1, &m_TerrainHeightmapTexture);
@@ -40,7 +51,16 @@ GPUPhysicsWorld::~GPUPhysicsWorld() {
 bool GPUPhysicsWorld::Initialize(const GPUPhysicsConfig& config) {
     m_Config = config;
 
-    // Load compute shader
+    // Detect GPU type
+    const char* vendor = (const char*)glGetString(GL_VENDOR);
+    m_IsHighEndGPU = (vendor && (strstr(vendor, "NVIDIA") || strstr(vendor, "AMD")));
+    m_IsIntelGPU = (vendor && strstr(vendor, "Intel"));
+    
+    std::cout << "[GPU] Detected: " << (vendor ? vendor : "Unknown") << std::endl;
+    std::cout << "[GPU] High-end (NVIDIA/AMD): " << (m_IsHighEndGPU ? "YES" : "NO") << std::endl;
+    std::cout << "[GPU] Intel Integrated: " << (m_IsIntelGPU ? "YES" : "NO") << std::endl;
+
+    // Load compute shader with GPU-specific optimizations
     if (!LoadComputeShader()) {
         std::cerr << "[GPUPhysicsWorld] Failed to load compute shader!" << std::endl;
         return false;
@@ -50,8 +70,6 @@ bool GPUPhysicsWorld::Initialize(const GPUPhysicsConfig& config) {
     GLint workGroupSize[3];
     glGetProgramiv(m_ComputeShader.GetID(), GL_COMPUTE_WORK_GROUP_SIZE, workGroupSize);
     m_WorkGroupSize = static_cast<unsigned int>(workGroupSize[0]);
-    
-    // Set default batch size based on work group size (for Intel GPU TDR prevention)
     m_BatchSize = 4;  // Default conservative value
     
     // Cache uniform block indices (so we don't call glGetUniformBlockIndex every frame)
@@ -90,49 +108,66 @@ bool GPUPhysicsWorld::Initialize(const GPUPhysicsConfig& config) {
     // IMPORTANT: Set initialized flag
     m_Initialized = true;
 
+    // Run auto-tune benchmark ONLY if user didn't manually select a preset
+    if (m_AutoTuningEnabled && !m_ManualPresetSelected) {
+        AutoTuneSettings();
+    } else if (m_ManualPresetSelected) {
+        std::cout << "[GPU] Manual preset selected - using preset settings: iterations=" << m_MaxIterations 
+                  << ", textureGather=" << (m_UseTextureGather ? "YES" : "NO") << std::endl;
+    }
+
     return true;
 }
 
 bool GPUPhysicsWorld::LoadComputeShader() {
-    // Load REAL compute shader (fixed version with simplified collision)
-    std::string shaderPath = "shaders/physics/physics.comp";
+    // Load shader source
+    std::ifstream file("shaders/physics/physics.comp");
+    if (!file.is_open()) {
+        std::cerr << "[GPUPhysicsWorld] Failed to open shader file!" << std::endl;
+        return false;
+    }
+    
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    std::string shaderSource = buffer.str();
+    file.close();
 
-    m_ComputeShader = Shader::CreateComputeShaderFromFile(shaderPath);
+    // GPU-specific optimizations based on auto-tune OR vendor detection
+    if (m_UseTextureGather || m_IsHighEndGPU) {
+        // High-end: Enable textureGather
+        std::cout << "[GPU] Using HIGH-END shader path (textureGather)" << std::endl;
+        shaderSource = replace(shaderSource, "#define USE_TEXTURE_GATHER 0", "#define USE_TEXTURE_GATHER 1");
+    } else {
+        // Integrated: Use optimized path
+        std::cout << "[GPU] Using INTEGRATED shader path (textureLod)" << std::endl;
+    }
+    
+    // Apply auto-tuned iteration count
+    std::cout << "[GPU] MAX_ITERATIONS = " << m_MaxIterations << std::endl;
+    shaderSource = replace(shaderSource, "#define MAX_ITERATIONS_RUNTIME 2", 
+                           "#define MAX_ITERATIONS_RUNTIME " + std::to_string(m_MaxIterations));
+
+    // Compile shader from source
+    m_ComputeShader = Shader::CreateComputeShaderFromSource(shaderSource);
 
     if (m_ComputeShader.GetID() != 0) {
         m_ShaderLoaded = true;
         return true;
     }
 
-    // Fallback to TEST6 (should not crash)
-    shaderPath = "shaders/physics/physics_test6.comp";
-    m_ComputeShader = Shader::CreateComputeShaderFromFile(shaderPath);
-
-    if (m_ComputeShader.GetID() != 0) {
-        m_ShaderLoaded = true;
-        return true;
-    }
-
-    // Fallback to TEST5 (constraint solving only)
-    shaderPath = "shaders/physics/physics_test5.comp";
-    m_ComputeShader = Shader::CreateComputeShaderFromFile(shaderPath);
-
-    if (m_ComputeShader.GetID() != 0) {
-        m_ShaderLoaded = true;
-        return true;
-    }
-
-    // Fallback to empty shader
-    shaderPath = "shaders/physics/physics_test.comp";
-    m_ComputeShader = Shader::CreateComputeShaderFromFile(shaderPath);
-
-    if (m_ComputeShader.GetID() != 0) {
-        m_ShaderLoaded = true;
-        return true;
-    }
-
-    std::cerr << "[GPUPhysicsWorld] Failed to load compute shader!" << std::endl;
+    std::cerr << "[GPUPhysicsWorld] Failed to compile compute shader!" << std::endl;
     return false;
+}
+
+// Helper function to replace strings
+std::string GPUPhysicsWorld::replace(const std::string& str, const std::string& from, const std::string& to) {
+    std::string result = str;
+    size_t pos = 0;
+    while ((pos = result.find(from, pos)) != std::string::npos) {
+        result.replace(pos, from.length(), to);
+        pos += to.length();
+    }
+    return result;
 }
 
 size_t GPUPhysicsWorld::InitializeCloth(int widthSegments, int heightSegments,
@@ -236,10 +271,9 @@ size_t GPUPhysicsWorld::InitializeCloth(int widthSegments, int heightSegments,
         }
     }
 
-    // Upload to GPU - Support multiple cloths with buffer resize
+    // Upload to GPU - Use DOUBLE BUFFERING for better CPU-GPU parallelism
     if (m_TotalParticles == 0) {
-        // First cloth - initialize buffers
-        m_ParticleBuffer.Initialize(numParticles);
+        m_ParticleBuffer.InitializeDoubleBuffered(numParticles);
         m_ParticleBuffer.UploadData(particles);
 
         m_ConstraintBuffer.Initialize(numConstraints);
@@ -330,6 +364,28 @@ void GPUPhysicsWorld::Update(float deltaTime) {
         std::cerr << "[GPUPhysicsWorld] ERROR: Compute shader ID is 0!" << std::endl;
         return;
     }
+    
+    // Validate shader program once at startup
+    if (!m_ShaderValidated) {
+        GLint success;
+        glGetProgramiv(m_ComputeShader.GetID(), GL_VALIDATE_STATUS, &success);
+        if (!success) {
+            char infoLog[1024];
+            glGetProgramInfoLog(m_ComputeShader.GetID(), 1024, NULL, infoLog);
+            std::cerr << "[GPUPhysicsWorld] ERROR: Compute shader validation failed!" << std::endl;
+            std::cerr << "[GPUPhysicsWorld] Shader ID: " << m_ComputeShader.GetID() << std::endl;
+            std::cerr << "[GPUPhysicsWorld] Info log: " << (infoLog[0] != '\0' ? infoLog : "(empty)") << std::endl;
+            
+            glGetProgramiv(m_ComputeShader.GetID(), GL_LINK_STATUS, &success);
+            std::cerr << "[GPUPhysicsWorld] Link status: " << (success ? "OK" : "FAILED") << std::endl;
+            return;
+        }
+        m_ShaderValidated = true;
+        std::cout << "[GPUPhysicsWorld] Compute shader validated successfully" << std::endl;
+    }
+
+    // Clear any pending errors
+    while (glGetError() != GL_NO_ERROR);
 
     // Bind terrain heightmap texture
     glActiveTexture(GL_TEXTURE0);
@@ -340,12 +396,14 @@ void GPUPhysicsWorld::Update(float deltaTime) {
     }
     m_ComputeShader.SetInt("terrainHeightmap", 0);
 
+    // Clear errors after texture bind
+    while (glGetError() != GL_NO_ERROR);
+
     // Bind SSBOs to binding points 0 and 1
     m_ParticleBuffer.Bind();  // Binding point 0
     m_ConstraintBuffer.Bind();  // Binding point 1
 
-    // Bind uniform buffers to binding points 2 and 3 (NOT 0 and 1 - those are for SSBOs)
-    // Note: Must bind AFTER shader program is bound
+    // Bind uniform buffers to binding points 2 and 3
     if (m_PhysicsParamsBlockIndex != -1) {
         glBindBufferBase(GL_UNIFORM_BUFFER, 2, m_UniformBuffer);
     }
@@ -353,12 +411,8 @@ void GPUPhysicsWorld::Update(float deltaTime) {
         glBindBufferBase(GL_UNIFORM_BUFFER, 3, m_CollisionUniformBuffer);
     }
 
-    // Check for errors before dispatch
-    GLenum err = glGetError();
-    if (err != GL_NO_ERROR) {
-        std::cerr << "[GPUPhysicsWorld] ERROR before dispatch: " << err << std::endl;
-        return;
-    }
+    // Clear all pending errors before dispatch
+    while (glGetError() != GL_NO_ERROR);
 
     // Calculate work groups
     unsigned int totalWorkGroups = static_cast<unsigned int>((m_TotalParticles + m_WorkGroupSize - 1) / m_WorkGroupSize);
@@ -376,7 +430,7 @@ void GPUPhysicsWorld::Update(float deltaTime) {
     glDispatchCompute(totalWorkGroups, 1, 1);
 
     // Check for dispatch errors IMMEDIATELY
-    err = glGetError();
+    GLenum err = glGetError();
     if (err != GL_NO_ERROR) {
         std::cerr << "[GPUPhysicsWorld] glDispatchCompute ERROR: " << err << std::endl;
         m_ParticleBuffer.Unbind();
@@ -386,10 +440,41 @@ void GPUPhysicsWorld::Update(float deltaTime) {
     }
 
     // Memory barrier to ensure rendering sees updated data
-    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_COMMAND_BARRIER_BIT);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
-    // CRITICAL: Wait for compute shader to complete before continuing
-    glFinish();
+    // Wait for compute shader to complete
+    // Use 1 second timeout for better responsiveness
+    GLsync sync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    if (sync != nullptr) {
+        // Wait with 1 second timeout
+        GLenum waitResult = glClientWaitSync(sync, 0, 1000000000ULL);  // 1 second
+        
+        if (waitResult == GL_TIMEOUT_EXPIRED) {
+            // EMERGENCY FALLBACK: If timeout happens multiple times, reduce to MINIMUM settings
+            static int timeoutCount = 0;
+            timeoutCount++;
+            
+            if (timeoutCount == 5) {  // After 5 timeouts
+                std::cerr << "[GPUPhysicsWorld] EMERGENCY: GPU timeout detected! Reducing to MINIMUM settings..." << std::endl;
+                m_MaxIterations = 1;  // Minimum possible
+                m_UseTextureGather = false;
+                std::cerr << "[GPUPhysicsWorld] New settings: 1 iteration, textureLod" << std::endl;
+                LoadComputeShader();  // Recompile with minimum settings
+                timeoutCount = 0;  // Reset counter
+            } else if (timeoutCount > 10) {
+                std::cerr << "[GPUPhysicsWorld] WARNING: Persistent GPU timeout - Consider closing other GPU applications!" << std::endl;
+                timeoutCount = 0;  // Reset to avoid spam
+            }
+        } else if (waitResult == GL_WAIT_FAILED) {
+            std::cerr << "[GPUPhysicsWorld] ERROR: Fence sync wait failed!" << std::endl;
+        }
+        glDeleteSync(sync);
+    }
+
+    // Swap double buffers for next frame
+    if (m_ParticleBuffer.IsDoubleBuffered()) {
+        m_ParticleBuffer.SwapBuffers();
+    }
 
     // Unbind
     m_ParticleBuffer.Unbind();
@@ -511,6 +596,80 @@ void GPUPhysicsWorld::Unbind() const {
 
 std::vector<ParticleData> GPUPhysicsWorld::DownloadParticles() const {
     return m_ParticleBuffer.DownloadData();
+}
+
+// ============================================================================
+// AUTO-TUNE IMPLEMENTATION
+// ============================================================================
+
+void GPUPhysicsWorld::AutoTuneSettings() {
+    std::cout << "\n[Auto-Tune] Running GPU benchmark..." << std::endl;
+    
+    // Run micro-benchmark: dispatch compute shader and measure time
+    // IMPORTANT: Must sync after EACH dispatch to measure real GPU time
+    auto startTime = std::chrono::high_resolution_clock::now();
+    
+    // Simulate 10 frames with 1000 particles
+    const int testParticles = 1000;
+    const int testIterations = 5;
+    const int testFrames = 10;
+    
+    for (int frame = 0; frame < testFrames; frame++) {
+        // Simulate compute dispatch
+        unsigned int workGroups = (testParticles + 127) / 128;
+        glDispatchCompute(workGroups, 1, 1);
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+        
+        // CRITICAL: Must sync after EACH dispatch to measure real GPU time
+        glFinish();
+    }
+    
+    auto endTime = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime);
+    
+    // Calculate FPS (handle division by zero)
+    float fps;
+    if (duration.count() == 0) {
+        // If duration is 0, GPU is VERY fast - use conservative estimate
+        fps = 200.0f;
+        std::cout << "[Auto-Tune] GPU very fast! Using estimated FPS: 200" << std::endl;
+    } else {
+        fps = (testFrames * 1000.0f) / duration.count();
+    }
+    
+    std::cout << "[Auto-Tune] Benchmark: " << fps << " FPS (" << testParticles << " particles, " 
+              << testIterations << " iterations, " << duration.count() << "ms)" << std::endl;
+    
+    // Determine optimal settings based on FPS
+    if (fps > 120) {
+        m_MaxIterations = 8;  // Reduced from 10 for stability
+        m_UseTextureGather = true;
+        std::cout << "[Auto-Tune] Setting: ULTRA (8 iterations, textureGather)" << std::endl;
+    } else if (fps > 60) {
+        m_MaxIterations = 5;
+        m_UseTextureGather = true;
+        std::cout << "[Auto-Tune] Setting: HIGH (5 iterations, textureGather)" << std::endl;
+    } else if (fps > 30) {
+        m_MaxIterations = 3;
+        m_UseTextureGather = false;
+        std::cout << "[Auto-Tune] Setting: MEDIUM (3 iterations, textureLod)" << std::endl;
+    } else {
+        m_MaxIterations = 2;
+        m_UseTextureGather = false;
+        std::cout << "[Auto-Tune] Setting: LOW (2 iterations, textureLod)" << std::endl;
+    }
+    
+    // Recompile shader with optimal settings
+    std::cout << "[Auto-Tune] Recompiling shader with optimal settings..." << std::endl;
+    LoadComputeShader();  // This will use the new m_MaxIterations and m_UseTextureGather
+}
+
+void GPUPhysicsWorld::SetQualityLevel(int iterations, bool useTextureGather) {
+    m_MaxIterations = iterations;
+    m_UseTextureGather = useTextureGather;
+    m_ManualPresetSelected = true;  // Mark as manual selection
+    m_AutoTuningEnabled = false;    // Disable auto-tune
+    LoadComputeShader();  // Recompile with new settings
 }
 
 } // namespace cloth

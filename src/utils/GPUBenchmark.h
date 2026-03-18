@@ -23,9 +23,11 @@ struct GPUCaps {
     bool hasComputeShader;
     bool hasSSBO;                 // Shader Storage Buffer Object
     bool hasPersistentMapping;    // GL_ARB_buffer_storage
-    bool hasAsyncCompute;         // Async compute queues
+    bool hasAsyncCompute;         // Async compute queues (NEW: runtime detected)
     bool hasRayTracing;           // Ray tracing extensions
     bool hasMeshShaders;          // Mesh/Task shaders
+    bool hasARBComputeShader5;    // NEW: ARB_compute_shader_5 extension
+    bool hasARBTextureGather;     // NEW: ARB_texture_gather extension
     
     // === Performance Metrics (Benchmarked) ===
     float computeTFLOPS;          // TFLOPS from compute benchmark

@@ -192,6 +192,9 @@ struct AppState {
         std::cout << "\n[GPU] Using preset: " << GPUDetector::GetPresetName(selectedPreset) << std::endl;
         std::cout << "[GPU] Starting simulation...\n" << std::endl;
 
+        // Mark as manual preset selection (disable auto-tune)
+        physicsWorld.SetManualPreset(true);
+
         // === INITIALIZE ADAPTIVE QUALITY ===
         adaptiveQuality.Initialize(selectedPreset);
         adaptiveQuality.SetEnabled(true);

@@ -148,7 +148,12 @@ int main() {
     state.physicsWorld.SetConfig(gpuPhysicsConfig);
     state.physicsWorld.SetBatchCount(state.gpuInfo.batchCount);
     
-    std::cout << "[Physics] Applied GPU settings: iterations=" << state.gpuInfo.physicsIterations 
+    // Sync quality settings with physics world (if manual preset selected)
+    if (state.physicsWorld.IsManualPreset()) {
+        state.physicsWorld.SetQualityLevel(state.gpuInfo.physicsIterations, false);  // textureGather = false for Intel
+    }
+
+    std::cout << "[Physics] Applied GPU settings: iterations=" << state.gpuInfo.physicsIterations
               << ", substeps=" << state.gpuInfo.collisionSubsteps << ", batches=" << state.gpuInfo.batchCount << std::endl;
 
     // Pre-load world textures

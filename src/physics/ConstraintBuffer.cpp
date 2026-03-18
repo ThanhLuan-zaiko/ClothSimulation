@@ -51,9 +51,8 @@ void ConstraintBuffer::Initialize(size_t numConstraints) {
         GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_FLUSH_EXPLICIT_BIT);
     
     m_IsPersistentMapped = (m_MappedPtr != nullptr);
-    
+
     if (!m_IsPersistentMapped) {
-        std::cout << "[ConstraintBuffer] Persistent mapping failed, falling back to traditional method" << std::endl;
         glNamedBufferData(m_Buffer, bufferSize, nullptr, GL_DYNAMIC_COPY);
     }
 

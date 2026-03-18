@@ -1,8 +1,16 @@
 #pragma once
 
+// NOMINMAX prevents Windows.h from defining min/max macros that conflict with std::min/std::max
+#ifdef _WIN32
+    #ifndef NOMINMAX
+        #define NOMINMAX
+    #endif
+#endif
+
 #include <glad/glad.h>
 #include <string>
 #include <iostream>
+#include <algorithm>  // For std::min/std::max
 #include "QualityPreset.h"
 #include "GPUBenchmark.h"
 #include "QualityClassifier.h"
@@ -46,6 +54,11 @@ struct GPUInfo {
     bool supportsSSBO;
     bool supportsPersistentMapping;
     
+    // NEW: Async compute and advanced feature capability
+    bool supportsAsyncCompute;        // Hardware/driver supports async compute
+    bool hasARBComputeShader5;        // ARB_compute_shader_5 extension
+    bool hasARBTextureGather;         // ARB_texture_gather extension
+
     GPUInfo() : vendorType(GPUVendor::UNKNOWN), detectedPreset(QualityPreset::LOW) {
         // Default conservative settings (Intel integrated)
         physicsIterations = 2;
@@ -55,10 +68,15 @@ struct GPUInfo {
         clothResolution[0] = 30;
         clothResolution[1] = 25;
         clothResolution[2] = 25;
-        
+
         supportsComputeShader = true;
         supportsSSBO = true;
         supportsPersistentMapping = true;
+        
+        // NEW: Async compute defaults (conservative)
+        supportsAsyncCompute = false;
+        hasARBComputeShader5 = false;
+        hasARBTextureGather = false;
     }
 };
 
@@ -166,14 +184,14 @@ public:
     static void ApplyPresetSettings(GPUInfo& info, QualityPreset preset) {
         switch (preset) {
             case QualityPreset::LOW:
-                // Intel integrated GPU - conservative settings
+                // Intel integrated GPU - VERY conservative settings
                 info.physicsIterations = 2;
                 info.collisionSubsteps = 1;
                 info.workGroupSize = 128;
                 info.batchCount = 4;  // Prevent TDR
-                info.clothResolution[0] = 30;
-                info.clothResolution[1] = 25;
-                info.clothResolution[2] = 25;
+                info.clothResolution[0] = 20;
+                info.clothResolution[1] = 20;
+                info.clothResolution[2] = 20;
                 break;
                 
             case QualityPreset::MEDIUM:
@@ -301,21 +319,34 @@ private:
         return QualityPreset::LOW;
     }
     
-    // Check OpenGL feature support
+    // Check OpenGL feature support (ENHANCED with async compute detection)
     static void CheckFeatureSupport(GPUInfo& info) {
         GLint major, minor;
         glGetIntegerv(GL_MAJOR_VERSION, &major);
         glGetIntegerv(GL_MINOR_VERSION, &minor);
-        
+
         // Compute shader requires OpenGL 4.3+
         info.supportsComputeShader = (major > 4 || (major == 4 && minor >= 3));
-        
+
         // SSBO requires OpenGL 4.3+
         info.supportsSSBO = (major > 4 || (major == 4 && minor >= 3));
-        
+
         // Persistent mapping requires OpenGL 4.4+
         info.supportsPersistentMapping = (major > 4 || (major == 4 && minor >= 4));
-        
+
+        // NEW: Check for ARB_compute_shader_5 (enables advanced compute features)
+        const char* extensions = (const char*)glGetString(GL_EXTENSIONS);
+        if (extensions) {
+            info.hasARBComputeShader5 = strstr(extensions, "GL_ARB_compute_shader_5") != nullptr;
+            info.hasARBTextureGather = strstr(extensions, "GL_ARB_texture_gather") != nullptr;
+        }
+
+        // NEW: Detect async compute capability based on GPU and extensions
+        info.supportsAsyncCompute = DetectAsyncComputeSupport(info);
+
+        // Apply GPU-specific optimizations
+        ApplyGPUOptimizations(info);
+
         if (!info.supportsComputeShader) {
             std::cout << "WARNING: Compute shaders not supported!" << std::endl;
         }
@@ -324,6 +355,107 @@ private:
         }
         if (!info.supportsPersistentMapping) {
             std::cout << "INFO: Persistent mapping not available, using fallback" << std::endl;
+        }
+        
+        // NEW: Print async compute status
+        std::cout << "Async Compute: " << (info.supportsAsyncCompute ? "ENABLED" : "DISABLED") << std::endl;
+        std::cout << "ARB_compute_shader_5: " << (info.hasARBComputeShader5 ? "YES" : "NO") << std::endl;
+        std::cout << "ARB_texture_gather: " << (info.hasARBTextureGather ? "YES" : "NO") << std::endl;
+    }
+    
+    // NEW: Detect async compute support based on GPU type and extensions
+    static bool DetectAsyncComputeSupport(const GPUInfo& info) {
+        // Must have compute shader support first
+        if (!info.supportsComputeShader) return false;
+        
+        // Must have ARB_compute_shader_5 for advanced features
+        if (!info.hasARBComputeShader5) return false;
+        
+        // GPU-specific detection
+        switch (info.vendorType) {
+            case GPUVendor::NVIDIA:
+                // NVIDIA RTX 30/40 series have excellent async compute support
+                // GTX 16xx and RTX 20xx also support it
+                if (info.name.find("RTX 40") != std::string::npos ||
+                    info.name.find("RTX 30") != std::string::npos ||
+                    info.name.find("RTX 20") != std::string::npos ||
+                    info.name.find("GTX 16") != std::string::npos) {
+                    return true;
+                }
+                // GTX 10xx series has limited async compute
+                if (info.name.find("GTX 10") != std::string::npos) {
+                    return info.hasARBComputeShader5;
+                }
+                return false;
+                
+            case GPUVendor::AMD:
+                // AMD GCN and RDNA architectures have good async compute support
+                if (info.name.find("RX 7") != std::string::npos ||
+                    info.name.find("RX 6") != std::string::npos ||
+                    info.name.find("RX 5") != std::string::npos ||
+                    info.name.find("Radeon RX") != std::string::npos) {
+                    return true;
+                }
+                return info.hasARBComputeShader5;
+                
+            case GPUVendor::APPLE:
+                // Apple Silicon supports async compute via Metal, but OpenGL is limited
+                return false;  // OpenGL on macOS doesn't expose async compute
+                
+            case GPUVendor::INTEL_INTEGRATED:
+            default:
+                // Intel integrated GPUs (UHD, Iris) don't have hardware async compute
+                return false;
+        }
+    }
+    
+    // NEW: Apply GPU-specific optimizations
+    static void ApplyGPUOptimizations(GPUInfo& info) {
+        // Set optimal work group size based on GPU architecture
+        switch (info.vendorType) {
+            case GPUVendor::NVIDIA:
+                // NVIDIA GPUs perform best with 256 work group size
+                info.workGroupSize = 256;
+                info.batchCount = 1;  // No TDR issues on dedicated GPU
+                break;
+                
+            case GPUVendor::AMD:
+                // AMD RDNA/GCN performs well with 192-256
+                info.workGroupSize = 192;
+                info.batchCount = 1;
+                break;
+                
+            case GPUVendor::APPLE:
+                // Apple Silicon performs well with 256
+                info.workGroupSize = 256;
+                info.batchCount = 1;
+                break;
+                
+            case GPUVendor::INTEL_INTEGRATED:
+            default:
+                // Intel integrated GPUs need conservative settings
+                info.workGroupSize = 128;
+                info.batchCount = 4;  // Prevent TDR timeout
+                break;
+        }
+        
+        // Override based on quality preset (use explicit template to avoid type ambiguity)
+        switch (info.detectedPreset) {
+            case QualityPreset::LOW:
+                info.workGroupSize = std::min<int>(info.workGroupSize, 128);
+                info.batchCount = std::max<int>(info.batchCount, 4);
+                break;
+            case QualityPreset::MEDIUM:
+                info.workGroupSize = std::min<int>(info.workGroupSize, 192);
+                info.batchCount = std::max<int>(info.batchCount, 2);
+                break;
+            case QualityPreset::HIGH:
+            case QualityPreset::ULTRA:
+                info.workGroupSize = std::min<int>(info.workGroupSize, 256);
+                info.batchCount = 1;
+                break;
+            default:
+                break;
         }
     }
 };
