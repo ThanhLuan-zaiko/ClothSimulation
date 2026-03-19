@@ -411,9 +411,6 @@ void GPUPhysicsWorld::Update(float deltaTime) {
         glBindBufferBase(GL_UNIFORM_BUFFER, 3, m_CollisionUniformBuffer);
     }
 
-    // Clear all pending errors before dispatch
-    while (glGetError() != GL_NO_ERROR);
-
     // Calculate work groups
     unsigned int totalWorkGroups = static_cast<unsigned int>((m_TotalParticles + m_WorkGroupSize - 1) / m_WorkGroupSize);
 
@@ -429,7 +426,7 @@ void GPUPhysicsWorld::Update(float deltaTime) {
     // === DISPATCH COMPUTE SHADER ===
     glDispatchCompute(totalWorkGroups, 1, 1);
 
-    // Check for dispatch errors IMMEDIATELY
+    // Check for dispatch errors
     GLenum err = glGetError();
     if (err != GL_NO_ERROR) {
         std::cerr << "[GPUPhysicsWorld] glDispatchCompute ERROR: " << err << std::endl;
@@ -442,34 +439,8 @@ void GPUPhysicsWorld::Update(float deltaTime) {
     // Memory barrier to ensure rendering sees updated data
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
-    // Wait for compute shader to complete
-    // Use 1 second timeout for better responsiveness
-    GLsync sync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-    if (sync != nullptr) {
-        // Wait with 1 second timeout
-        GLenum waitResult = glClientWaitSync(sync, 0, 1000000000ULL);  // 1 second
-        
-        if (waitResult == GL_TIMEOUT_EXPIRED) {
-            // EMERGENCY FALLBACK: If timeout happens multiple times, reduce to MINIMUM settings
-            static int timeoutCount = 0;
-            timeoutCount++;
-            
-            if (timeoutCount == 5) {  // After 5 timeouts
-                std::cerr << "[GPUPhysicsWorld] EMERGENCY: GPU timeout detected! Reducing to MINIMUM settings..." << std::endl;
-                m_MaxIterations = 1;  // Minimum possible
-                m_UseTextureGather = false;
-                std::cerr << "[GPUPhysicsWorld] New settings: 1 iteration, textureLod" << std::endl;
-                LoadComputeShader();  // Recompile with minimum settings
-                timeoutCount = 0;  // Reset counter
-            } else if (timeoutCount > 10) {
-                std::cerr << "[GPUPhysicsWorld] WARNING: Persistent GPU timeout - Consider closing other GPU applications!" << std::endl;
-                timeoutCount = 0;  // Reset to avoid spam
-            }
-        } else if (waitResult == GL_WAIT_FAILED) {
-            std::cerr << "[GPUPhysicsWorld] ERROR: Fence sync wait failed!" << std::endl;
-        }
-        glDeleteSync(sync);
-    }
+    // Use glFinish() to wait for GPU completion
+    glFinish();
 
     // Swap double buffers for next frame
     if (m_ParticleBuffer.IsDoubleBuffered()) {
@@ -484,20 +455,31 @@ void GPUPhysicsWorld::Update(float deltaTime) {
 
 void GPUPhysicsWorld::UpdateUniforms(float deltaTime) {
     // Physics params uniform block
+    // Layout must match shader exactly (std140 layout):
+    // - vec3 gravity (16 bytes: xyz + padding)
+    // - float deltaTime (4 bytes)
+    // - float damping (4 bytes)
+    // - int numParticles (4 bytes)
+    // - int numConstraints (4 bytes)
+    // - float restLength (4 bytes)
+    // - vec2 terrainSize (8 bytes)
+    // - float terrainHeightScale (4 bytes)
     glBindBuffer(GL_UNIFORM_BUFFER, m_UniformBuffer);
 
-    float physicsData[16]; // 4 vec4s
+    float physicsData[16]; // 4 vec4s = 64 bytes
+    // vec4: gravity
     physicsData[0] = m_Config.gravity.x;
     physicsData[1] = m_Config.gravity.y;
     physicsData[2] = m_Config.gravity.z;
-    physicsData[3] = m_Config.damping;
+    physicsData[3] = deltaTime;  // deltaTime comes AFTER gravity (matches shader layout)
 
-    physicsData[4] = deltaTime;
-    physicsData[5] = static_cast<float>(m_Config.iterations);
-    physicsData[6] = static_cast<float>(m_TotalParticles);
-    physicsData[7] = static_cast<float>(m_TotalConstraints);
+    // vec4: damping, numParticles, numConstraints, restLength
+    physicsData[4] = m_Config.damping;
+    physicsData[5] = static_cast<float>(m_TotalParticles);
+    physicsData[6] = static_cast<float>(m_TotalConstraints);
+    physicsData[7] = 0.0f;  // restLength (unused, padding)
 
-    // terrainSize and terrainHeightScale
+    // vec4: terrainSize (vec2) + terrainHeightScale + padding
     if (m_Terrain) {
         physicsData[8] = 100.0f; // terrainSize.x
         physicsData[9] = 100.0f; // terrainSize.y
@@ -507,6 +489,7 @@ void GPUPhysicsWorld::UpdateUniforms(float deltaTime) {
         physicsData[9] = 100.0f;
         physicsData[10] = 1.0f;
     }
+    physicsData[11] = 0.0f;  // padding
 
     glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(physicsData), physicsData);
     glBindBuffer(GL_UNIFORM_BUFFER, 0);
@@ -519,7 +502,7 @@ void GPUPhysicsWorld::UpdateUniforms(float deltaTime) {
     // Collision params
     glBindBuffer(GL_UNIFORM_BUFFER, m_CollisionUniformBuffer);
 
-    float collisionData[12]; // 3 vec4s
+    float collisionData[12]; // 3 vec4s = 48 bytes
     collisionData[0] = m_Collision.sphereCenter.x;
     collisionData[1] = m_Collision.sphereCenter.y;
     collisionData[2] = m_Collision.sphereCenter.z;

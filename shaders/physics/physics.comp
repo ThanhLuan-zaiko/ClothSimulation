@@ -2,51 +2,36 @@
 #extension GL_ARB_compute_shader : require
 #extension GL_ARB_shader_storage_buffer_object : require
 
-// GPU-specific settings (will be replaced at runtime based on GPU type)
-#define USE_TEXTURE_GATHER 0          // 1 for NVIDIA/AMD, 0 for Intel
-#define MAX_ITERATIONS_RUNTIME 2      // 5 for NVIDIA/AMD, 2 for Intel
+// GPU-specific settings
+#define USE_TEXTURE_GATHER 0
+#define MAX_ITERATIONS_RUNTIME 2
 
-// Work group size
 layout(local_size_x = 128) in;
-
-// ============================================================================
-// STRUCT DEFINITIONS (must be defined before SSBO blocks)
-// ============================================================================
 
 // Particle data structure (48 bytes)
 struct ParticleDataType {
-    vec4 position;      // xyz = position, w = mass
-    vec4 prevPosition;  // xyz = previous position, w = padding
-    vec4 velocity;      // xyz = velocity, w = pinned (1.0 = pinned, 0.0 = free)
+    vec4 position;
+    vec4 prevPosition;
+    vec4 velocity;
 };
 
 // Constraint data structure (32 bytes)
 struct ConstraintDataType {
-    ivec4 indices;  // xy = p1,p2 particle indices, z = type, w = padding
-    vec2 params;    // x = restLength, y = stiffness
-    vec2 padding;   // alignment
+    ivec4 indices;
+    vec2 params;
+    vec2 padding;
 };
 
-// ============================================================================
-// SHADER STORAGE BUFFER OBJECTS (SSBOs) - INTERLEAVED
-// ============================================================================
-
-// Particle data - SINGLE interleaved buffer (binding = 0)
+// SSBOs
 layout(std430, binding = 0) buffer ParticleBufferSSBO {
     ParticleDataType particles[];
 };
 
-// Constraint data - SINGLE interleaved buffer (binding = 1)
 layout(std430, binding = 1) buffer ConstraintBufferSSBO {
     ConstraintDataType constraints[];
 };
 
-// ============================================================================
-// UNIFORMS
-// ============================================================================
-
-// NOTE: Uniform buffers use binding points 2 and 3 to avoid conflict with SSBOs
-// (SSBOs use binding points 0 and 1)
+// Uniforms
 layout(std140, binding = 2) uniform PhysicsParams {
     vec3 gravity;
     float deltaTime;
@@ -58,7 +43,6 @@ layout(std140, binding = 2) uniform PhysicsParams {
     float terrainHeightScale;
 };
 
-// Collision parameters
 layout(std140, binding = 3) uniform CollisionParams {
     vec3 sphereCenter;
     float sphereRadius;
@@ -69,326 +53,152 @@ layout(std140, binding = 3) uniform CollisionParams {
     int collisionSubsteps;
 };
 
-// Terrain heightmap texture (for collision detection)
 uniform sampler2D terrainHeightmap;
 
-// ============================================================================
-// CONSTANTS
-// ============================================================================
-
-// Use runtime-defined value (replaced at shader compilation based on GPU)
 const int MAX_ITERATIONS = MAX_ITERATIONS_RUNTIME;
 const float EPSILON = 0.0001f;
-const float PI = 3.14159265359f;
-
-// Constraint types
-const int CONSTRAINT_DISTANCE = 0;
-const int CONSTRAINT_SHEAR = 1;
-const int CONSTRAINT_BEND = 2;
 
 // ============================================================================
-// SHARED MEMORY - For faster constraint solving
+// TERRAIN FUNCTIONS
 // ============================================================================
 
-// OPTIMIZED: Only store positions in shared memory (reduced from 3 arrays to 1)
-// This saves shared memory bandwidth and reduces pressure on GPU caches
-// Use work-group-size aligned array - size will be set dynamically via specialization
-shared vec3 sharedPositions[256];  // Increased max size for high-end GPUs
-
-// ============================================================================
-// HELPER FUNCTIONS
-// ============================================================================
-
-// Get terrain height at world position (x, z)
-// GPU-specific: textureGather for NVIDIA/AMD, textureLod for Intel
 float getTerrainHeight(float x, float z) {
-    // Normalize coordinates to [0, 1] range for texture lookup
     float halfSize = terrainSize.x * 0.5f;
     float u = (x + halfSize) / terrainSize.x;
     float v = (z + halfSize) / terrainSize.y;
-
-    // Clamp to [0, 1] - CRITICAL to prevent out-of-bounds texture access
     u = clamp(u, 0.0f, 1.0f);
     v = clamp(v, 0.0f, 1.0f);
-
+    
     #if USE_TEXTURE_GATHER
-        // NVIDIA/AMD: Use textureGather for better quality (4 samples in 1 call)
         vec4 heights = textureGather(terrainHeightmap, vec2(u, v), 0);
-        float height = dot(heights, vec4(0.25f));
+        return dot(heights, vec4(0.25f)) * terrainHeightScale - terrainHeightScale * 0.5f;
     #else
-        // Intel/Integrated: Use simple textureLod for better performance
         float height = textureLod(terrainHeightmap, vec2(u, v), 0.0).r;
-    #endif
-
-    // Apply height scale and offset (center around 0)
-    return (height - 0.5f) * terrainHeightScale;
-}
-
-// Get terrain normal using finite differences
-// GPU-specific: More samples for NVIDIA/AMD, fewer for Intel
-vec3 getTerrainNormal(float x, float z) {
-    #if USE_TEXTURE_GATHER
-        // NVIDIA/AMD: Higher quality normal with more samples
-        float delta = terrainSize.x / 256.0f;
-        float hL = getTerrainHeight(x - delta, z);
-        float hR = getTerrainHeight(x + delta, z);
-        float hD = getTerrainHeight(x, z - delta);
-        float hU = getTerrainHeight(x, z + delta);
-        return normalize(vec3(hL - hR, 2.0f * delta, hD - hU));
-    #else
-        // Intel/Integrated: Simpler normal calculation with fewer samples
-        float delta = terrainSize.x / 128.0f;
-        float hR = getTerrainHeight(x + delta, z);
-        float hU = getTerrainHeight(x, z + delta);
-        float hC = getTerrainHeight(x, z);
-        return normalize(vec3(hC - hR, delta, hC - hU));
+        return (height - 0.5f) * terrainHeightScale;
     #endif
 }
 
-// Check if position is within terrain bounds
-bool isInTerrainBounds(float x, float z) {
-    float halfSize = terrainSize.x * 0.5f;
-    return (x >= -halfSize && x <= halfSize && z >= -halfSize && z <= halfSize);
-}
-
 // ============================================================================
-// STAGE 0: LOAD TO SHARED MEMORY (OPTIMIZED)
-// ============================================================================
-
-// OPTIMIZED: Only load positions to shared memory
-// Pinned state is read directly from SSBO when needed (saves shared memory bandwidth)
-void loadToSharedMemory(uint globalIdx, uint localIdx) {
-    if (globalIdx < numParticles) {
-        sharedPositions[localIdx] = particles[globalIdx].position.xyz;
-    }
-    barrier();
-}
-
-// ============================================================================
-// STAGE 1: VERLET INTEGRATION
-// ============================================================================
-
-void integrateVerlet(uint idx) {
-    if (idx >= numParticles) return;
-    
-    // Check if particle is pinned
-    if (particles[idx].velocity.w >= 0.5f) return;
-    
-    vec3 pos = particles[idx].position.xyz;
-    vec3 prevPos = particles[idx].prevPosition.xyz;
-    float mass = particles[idx].position.w;
-    
-    // Verlet integration: x_new = x + (x - x_prev) * damping + a * dt^2
-    vec3 velocity = (pos - prevPos) * damping;
-    
-    // Apply gravity
-    vec3 acceleration = gravity;
-    
-    // Update positions
-    vec3 newPos = pos + velocity + acceleration * deltaTime * deltaTime;
-    
-    // Store results
-    particles[idx].prevPosition = vec4(pos, 0.0f);
-    particles[idx].position = vec4(newPos, mass);
-    particles[idx].velocity = vec4((newPos - pos) / deltaTime, 0.0f);
-    
-    // Update shared memory
-    sharedPositions[gl_LocalInvocationID.x] = newPos;
-}
-
-// ============================================================================
-// STAGE 2: CONSTRAINT SOLVING (OPTIMIZED)
-// ============================================================================
-
-void solveDistanceConstraint(uint idx) {
-    if (idx >= numConstraints) return;
-
-    ivec4 indices = constraints[idx].indices;
-    int p1Idx = indices.x;
-    int p2Idx = indices.y;
-
-    if (p1Idx < 0 || p2Idx < 0 || p1Idx >= numParticles || p2Idx >= numParticles) return;
-
-    // Read from shared memory (faster!)
-    vec3 p1Pos = sharedPositions[p1Idx];
-    vec3 p2Pos = sharedPositions[p2Idx];
-    
-    // OPTIMIZED: Read pinned state directly from SSBO (avoids shared memory pressure)
-    float p1Pinned = particles[p1Idx].velocity.w;
-    float p2Pinned = particles[p2Idx].velocity.w;
-
-    // Skip if both pinned
-    if (p1Pinned >= 0.5f && p2Pinned >= 0.5f) return;
-
-    vec3 delta = p2Pos - p1Pos;
-    float currentLength = length(delta);
-
-    if (currentLength < EPSILON) return;
-
-    float restLen = constraints[idx].params.x;
-    float stiffness = constraints[idx].params.y;
-
-    // Calculate displacement
-    float diff = (currentLength - restLen) / currentLength;
-    vec3 correction = delta * diff * stiffness;
-
-    // Apply corrections based on pinning
-    vec3 newP1Pos = p1Pos;
-    vec3 newP2Pos = p2Pos;
-
-    if (p1Pinned < 0.5f && p2Pinned < 0.5f) {
-        newP1Pos -= correction * 0.5f;
-        newP2Pos += correction * 0.5f;
-    } else if (p1Pinned < 0.5f) {
-        newP1Pos -= correction;
-    } else if (p2Pinned < 0.5f) {
-        newP2Pos += correction;
-    }
-
-    // Update shared memory
-    sharedPositions[p1Idx] = newP1Pos;
-    sharedPositions[p2Idx] = newP2Pos;
-}
-
-void solveConstraints(uint idx) {
-    solveDistanceConstraint(idx);
-}
-
-// ============================================================================
-// STAGE 3: WRITE BACK FROM SHARED MEMORY
-// ============================================================================
-
-void writeBackFromShared(uint globalIdx, uint localIdx) {
-    if (globalIdx < numParticles) {
-        // Update global memory from shared
-        particles[globalIdx].position.xyz = sharedPositions[localIdx];
-    }
-}
-
-// ============================================================================
-// STAGE 4: COLLISION DETECTION & RESPONSE
-// ============================================================================
-
-void handleSphereCollision(uint idx) {
-    if (idx >= numParticles) return;
-    if (particles[idx].velocity.w >= 0.5f) return; // Skip pinned
-    
-    vec3 pos = particles[idx].position.xyz;
-    vec3 prevPos = particles[idx].prevPosition.xyz;
-    
-    vec3 toSphere = pos - sphereCenter;
-    float dist = length(toSphere);
-    float minDist = sphereRadius + collisionMargin;
-    
-    if (dist < minDist) {
-        vec3 normal = toSphere / dist;
-        
-        // Push particle out of sphere
-        vec3 newPos = sphereCenter + normal * minDist;
-        
-        // Calculate velocity
-        vec3 velocity = pos - prevPos;
-        float normalVel = dot(velocity, normal);
-        
-        // Only damp if moving toward sphere
-        if (normalVel < 0.0f) {
-            vec3 normalComponent = normalVel * normal;
-            vec3 tangentialComponent = velocity - normalComponent;
-            
-            // Apply damping and friction
-            tangentialComponent *= frictionFactor;
-            normalComponent *= dampingFactor;
-            
-            vec3 newVelocity = tangentialComponent + normalComponent;
-            particles[idx].prevPosition = vec4(newPos - newVelocity * deltaTime, 0.0f);
-        }
-        
-        particles[idx].position = vec4(newPos, particles[idx].position.w);
-    }
-}
-
-void handleTerrainCollision(uint idx) {
-    if (idx >= numParticles) return;
-    if (particles[idx].velocity.w >= 0.5f) return; // Skip pinned
-
-    vec3 pos = particles[idx].position.xyz;
-    vec3 prevPos = particles[idx].prevPosition.xyz;
-
-    // Check if within terrain bounds
-    if (!isInTerrainBounds(pos.x, pos.z)) return;
-
-    // OPTIMIZED: Simple height check without normal calculation
-    // Get terrain height only (skip expensive normal calculation)
-    float terrainHeight = getTerrainHeight(pos.x, pos.z);
-    float targetHeight = terrainHeight + collisionMargin;
-
-    if (pos.y < targetHeight) {
-        // Simple collision response - push up and damp velocity
-        vec3 newPos = pos;
-        newPos.y = max(pos.y, targetHeight);
-
-        vec3 velocity = pos - prevPos;
-        
-        // Simple damping (no normal calculation needed)
-        if (velocity.y < 0.0f) {
-            velocity.y *= dampingFactor;
-        }
-
-        particles[idx].prevPosition = vec4(newPos - velocity, 0.0f);
-        particles[idx].position = vec4(newPos, particles[idx].position.w);
-    }
-}
-
-void handleGroundCollision(uint idx) {
-    if (idx >= numParticles) return;
-    if (particles[idx].velocity.w >= 0.5f) return; // Skip pinned
-    
-    if (particles[idx].position.y < groundLevel) {
-        particles[idx].position.y = groundLevel;
-        particles[idx].prevPosition.y = groundLevel;
-    }
-}
-
-void handleCollisions(uint idx) {
-    handleGroundCollision(idx);
-    handleTerrainCollision(idx);
-    handleSphereCollision(idx);
-}
-
-// ============================================================================
-// MAIN
+// MAIN - COMBINED LOGIC (like working version)
 // ============================================================================
 
 void main() {
-    uint globalIdx = gl_GlobalInvocationID.x;
-    uint localIdx = gl_LocalInvocationID.x;
-
-    // Stage 0: Load particle data to shared memory
-    loadToSharedMemory(globalIdx, localIdx);
-
-    // Stage 1: Verlet Integration
-    integrateVerlet(globalIdx);
-
-    // CRITICAL: Must use barrier() here - all threads must sync before constraint solving
-    barrier();
-
-    // Stage 2: Solve Constraints (multiple iterations with shared memory)
-    for (int i = 0; i < MAX_ITERATIONS; i++) {
-        solveConstraints(globalIdx);
-        // CRITICAL: barrier() required - threads must sync after each iteration
-        barrier();
+    uint idx = gl_GlobalInvocationID.x;
+    
+    if (idx >= numParticles) {
+        return;
     }
-
-    // Stage 3: Write back from shared memory to global
-    writeBackFromShared(globalIdx, localIdx);
-
-    // CRITICAL: Must sync before collision detection
-    barrier();
-
-    // Stage 4: Collision Detection & Response (with sub-stepping for stability)
-    // Sub-stepping improves collision stability by processing collisions multiple times
-    // with smaller time steps
-    for (int s = 0; s < collisionSubsteps; s++) {
-        handleCollisions(globalIdx);
+    
+    ParticleDataType particle = particles[idx];
+    
+    // === STAGE 1: VERLET INTEGRATION ===
+    if (particle.velocity.w < 0.5f) {
+        vec3 pos = particle.position.xyz;
+        vec3 prevPos = particle.prevPosition.xyz;
+        float mass = particle.position.w;
+        
+        vec3 velocity = (pos - prevPos) * damping;
+        vec3 newPos = pos + velocity + gravity * deltaTime * deltaTime;
+        
+        particles[idx].prevPosition = vec4(pos, 0.0f);
+        particles[idx].position = vec4(newPos, mass);
+        particles[idx].velocity = vec4((newPos - pos) / deltaTime, 0.0f);
+        
+        // Update particle for next stage
+        particle = particles[idx];
+    }
+    
+    // === STAGE 2: CONSTRAINT SOLVING ===
+    for (int i = 0; i < MAX_ITERATIONS; i++) {
+        if (idx < numConstraints) {
+            ConstraintDataType constraint = constraints[idx];
+            int p1Idx = constraint.indices.x;
+            int p2Idx = constraint.indices.y;
+            
+            if (p1Idx >= 0 && p2Idx >= 0 && p1Idx < numParticles && p2Idx < numParticles) {
+                ParticleDataType p1 = particles[p1Idx];
+                ParticleDataType p2 = particles[p2Idx];
+                
+                if (p1.velocity.w < 0.5f || p2.velocity.w < 0.5f) {
+                    vec3 delta = p2.position.xyz - p1.position.xyz;
+                    float currentLength = length(delta);
+                    
+                    if (currentLength >= EPSILON) {
+                        float restLen = constraint.params.x;
+                        float stiffness = constraint.params.y;
+                        
+                        float diff = (currentLength - restLen) / currentLength;
+                        vec3 correction = delta * diff * stiffness;
+                        
+                        vec3 newP1Pos = p1.position.xyz;
+                        vec3 newP2Pos = p2.position.xyz;
+                        
+                        if (p1.velocity.w < 0.5f && p2.velocity.w < 0.5f) {
+                            newP1Pos -= correction * 0.5f;
+                            newP2Pos += correction * 0.5f;
+                        } else if (p1.velocity.w < 0.5f) {
+                            newP1Pos -= correction;
+                        } else {
+                            newP2Pos += correction;
+                        }
+                        
+                        particles[p1Idx].position.xyz = newP1Pos;
+                        particles[p2Idx].position.xyz = newP2Pos;
+                    }
+                }
+            }
+        }
+    }
+    
+    // === STAGE 3: COLLISION DETECTION ===
+    // Re-read particle after constraint solving
+    particle = particles[idx];
+    
+    if (particle.velocity.w < 0.5f) {
+        vec3 pos = particle.position.xyz;
+        vec3 prevPos = particle.prevPosition.xyz;
+        float mass = particle.position.w;
+        
+        bool collided = false;
+        vec3 newPos = pos;
+        
+        // Ground collision
+        if (newPos.y < groundLevel) {
+            newPos.y = groundLevel;
+            collided = true;
+        }
+        
+        // Sphere collision
+        if (sphereRadius > 0.0f) {
+            vec3 toSphere = newPos - sphereCenter;
+            float dist = length(toSphere);
+            float minDist = sphereRadius + collisionMargin;
+            
+            if (dist < minDist) {
+                vec3 normal = toSphere / dist;
+                newPos = sphereCenter + normal * minDist;
+                collided = true;
+            }
+        }
+        
+        // Terrain collision
+        float halfSize = terrainSize.x * 0.5f;
+        if (newPos.x >= -halfSize && newPos.x <= halfSize && 
+            newPos.z >= -halfSize && newPos.z <= halfSize) {
+            float terrainHeight = getTerrainHeight(newPos.x, newPos.z);
+            float targetHeight = terrainHeight + collisionMargin;
+            
+            if (newPos.y < targetHeight) {
+                newPos.y = targetHeight;
+                collided = true;
+            }
+        }
+        
+        if (collided) {
+            particles[idx].position = vec4(newPos, mass);
+            vec3 velocity = pos - prevPos;
+            velocity *= dampingFactor;
+            particles[idx].prevPosition = vec4(newPos - velocity, 0.0f);
+        }
     }
 }
