@@ -373,15 +373,10 @@ void GPUPhysicsWorld::Update(float deltaTime) {
             char infoLog[1024];
             glGetProgramInfoLog(m_ComputeShader.GetID(), 1024, NULL, infoLog);
             std::cerr << "[GPUPhysicsWorld] ERROR: Compute shader validation failed!" << std::endl;
-            std::cerr << "[GPUPhysicsWorld] Shader ID: " << m_ComputeShader.GetID() << std::endl;
             std::cerr << "[GPUPhysicsWorld] Info log: " << (infoLog[0] != '\0' ? infoLog : "(empty)") << std::endl;
-            
-            glGetProgramiv(m_ComputeShader.GetID(), GL_LINK_STATUS, &success);
-            std::cerr << "[GPUPhysicsWorld] Link status: " << (success ? "OK" : "FAILED") << std::endl;
             return;
         }
         m_ShaderValidated = true;
-        std::cout << "[GPUPhysicsWorld] Compute shader validated successfully" << std::endl;
     }
 
     // Clear any pending errors
@@ -439,7 +434,7 @@ void GPUPhysicsWorld::Update(float deltaTime) {
     // Memory barrier to ensure rendering sees updated data
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
-    // Use glFinish() to wait for GPU completion
+    // Wait for GPU completion
     glFinish();
 
     // Swap double buffers for next frame
