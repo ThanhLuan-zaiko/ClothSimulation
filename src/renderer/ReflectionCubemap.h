@@ -7,7 +7,7 @@ namespace cloth {
 
 class ReflectionCubemap {
 public:
-    ReflectionCubemap(unsigned int size = 512);
+    ReflectionCubemap(unsigned int size = 512, bool useHDR = true);
     ~ReflectionCubemap();
 
     void BeginRender();
@@ -17,9 +17,13 @@ public:
     void BeginFaceRender(unsigned int face);
     void EndFaceRender();
 
+    // Initialize cubemap with skybox color to avoid black flash
+    void InitializeWithSkybox(unsigned int skyboxTextureID);
+
     unsigned int GetTextureID() const { return m_CubemapTexture; }
     unsigned int GetFBO() const { return m_FBO; }
     unsigned int GetSize() const { return m_Size; }
+    bool IsHDR() const { return m_IsHDR; }
 
     // Get view matrix for each face
     glm::mat4 GetViewMatrix(unsigned int face, const glm::vec3& position, const glm::vec3& up = glm::vec3(0, 1, 0));
@@ -32,6 +36,7 @@ private:
     unsigned int m_Size;
     glm::mat4 m_Projection;
     bool m_Initialized;
+    bool m_IsHDR;
     int m_Viewport[4]; // Store original viewport
 };
 

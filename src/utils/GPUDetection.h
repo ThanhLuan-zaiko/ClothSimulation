@@ -58,6 +58,12 @@ struct GPUInfo {
     bool supportsAsyncCompute;        // Hardware/driver supports async compute
     bool hasARBComputeShader5;        // ARB_compute_shader_5 extension
     bool hasARBTextureGather;         // ARB_texture_gather extension
+    
+    // Reflection quality settings
+    int reflectionResolution;         // 256, 512, 1024
+    bool reflectionHDR;               // Enable HDR rendering
+    bool reflectionLOD;               // Enable LOD bias for performance
+    float reflectionExposure;         // HDR exposure value
 
     GPUInfo() : vendorType(GPUVendor::UNKNOWN), detectedPreset(QualityPreset::LOW) {
         // Default conservative settings (Intel integrated)
@@ -72,11 +78,17 @@ struct GPUInfo {
         supportsComputeShader = true;
         supportsSSBO = true;
         supportsPersistentMapping = true;
-        
+
         // NEW: Async compute defaults (conservative)
         supportsAsyncCompute = false;
         hasARBComputeShader5 = false;
         hasARBTextureGather = false;
+        
+        // Reflection defaults (LOW preset)
+        reflectionResolution = 256;
+        reflectionHDR = true;          // HDR enabled even for LOW
+        reflectionLOD = true;          // LOD blur enabled for performance
+        reflectionExposure = 1.0f;
     }
 };
 
@@ -184,49 +196,69 @@ public:
     static void ApplyPresetSettings(GPUInfo& info, QualityPreset preset) {
         switch (preset) {
             case QualityPreset::LOW:
-                // Intel integrated GPU - VERY conservative settings
+                // Intel integrated GPU - conservative settings
                 info.physicsIterations = 2;
                 info.collisionSubsteps = 1;
                 info.workGroupSize = 128;
                 info.batchCount = 4;  // Prevent TDR
-                info.clothResolution[0] = 20;
-                info.clothResolution[1] = 20;
-                info.clothResolution[2] = 20;
+                info.clothResolution[0] = 30;  // +10 (was 20)
+                info.clothResolution[1] = 30;  // +10 (was 20)
+                info.clothResolution[2] = 30;  // +10 (was 20)
+                // Reflection: HDR enabled, but lower resolution + LOD blur for performance
+                info.reflectionResolution = 256;
+                info.reflectionHDR = true;
+                info.reflectionLOD = true;
+                info.reflectionExposure = 1.0f;
                 break;
-                
+
             case QualityPreset::MEDIUM:
                 // Entry-level dedicated GPU
                 info.physicsIterations = 3;
                 info.collisionSubsteps = 2;
                 info.workGroupSize = 192;
                 info.batchCount = 2;
-                info.clothResolution[0] = 45;
-                info.clothResolution[1] = 40;
-                info.clothResolution[2] = 40;
+                info.clothResolution[0] = 55;  // +10 (was 45)
+                info.clothResolution[1] = 50;  // +10 (was 40)
+                info.clothResolution[2] = 50;  // +10 (was 40)
+                // Reflection: Good balance with HDR and LOD
+                info.reflectionResolution = 512;
+                info.reflectionHDR = true;
+                info.reflectionLOD = true;
+                info.reflectionExposure = 1.1f;
                 break;
-                
+
             case QualityPreset::HIGH:
                 // Mid-range dedicated GPU
                 info.physicsIterations = 4;
                 info.collisionSubsteps = 2;
                 info.workGroupSize = 256;
                 info.batchCount = 1;  // No batching needed
-                info.clothResolution[0] = 55;
-                info.clothResolution[1] = 50;
-                info.clothResolution[2] = 50;
+                info.clothResolution[0] = 65;  // +10 (was 55)
+                info.clothResolution[1] = 60;  // +10 (was 50)
+                info.clothResolution[2] = 60;  // +10 (was 50)
+                // Reflection: High quality with HDR, no LOD blur
+                info.reflectionResolution = 512;
+                info.reflectionHDR = true;
+                info.reflectionLOD = false;
+                info.reflectionExposure = 1.2f;
                 break;
-                
+
             case QualityPreset::ULTRA:
                 // High-end GPU - MAX POWER!
                 info.physicsIterations = 5;
                 info.collisionSubsteps = 3;
                 info.workGroupSize = 256;
                 info.batchCount = 1;
-                info.clothResolution[0] = 60;
-                info.clothResolution[1] = 60;
-                info.clothResolution[2] = 60;
+                info.clothResolution[0] = 70;  // +10 (was 60)
+                info.clothResolution[1] = 70;  // +10 (was 60)
+                info.clothResolution[2] = 70;  // +10 (was 60)
+                // Reflection: Maximum quality - 1024x1024, HDR, no LOD
+                info.reflectionResolution = 1024;
+                info.reflectionHDR = true;
+                info.reflectionLOD = false;
+                info.reflectionExposure = 1.3f;
                 break;
-                
+
             case QualityPreset::CUSTOM:
                 // Keep current values (from detection)
                 break;

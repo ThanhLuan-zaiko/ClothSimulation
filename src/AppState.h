@@ -46,8 +46,8 @@ struct AppState {
     // Cloth drop animation
     std::vector<float> clothDropTimers;      // Timer for each cloth drop
     std::vector<bool> clothDropped;          // Whether each cloth has started falling
-    float clothDropDelay = 1.5f;             // Delay between each cloth drop
-    float clothDropStartDelay = 0.5f;        // Initial delay before first cloth drops
+    float clothDropDelay = 3.0f;             // Delay between each cloth drop (increased for dramatic effect)
+    float clothDropStartDelay = 1.0f;        // Initial delay before first cloth drops
 
     // World and sphere
     World world;
@@ -62,11 +62,20 @@ struct AppState {
     // Reflection
     ReflectionCubemap* reflectionCubemap = nullptr;  // Use pointer - initialized in InitializeGL()
     bool reflectionNeedsUpdate = true;
-    
+
     // Lazy update tracking
     glm::vec3 lastReflectionUpdatePos;  // Last camera position when reflection was updated
-    float reflectionUpdateThreshold = 5.0f;  // Increased threshold for better performance (was 2.5f)
+    glm::vec3 lastReflectionViewDir;    // Last view direction when reflection was updated
+    float reflectionUpdateThreshold = 3.0f;  // Distance threshold for updating reflection
     int lastTerrainTextureIndex = -1;  // Track terrain texture index
+    
+    // Reflection quality settings (configurable)
+    int reflectionResolution = 512;     // 256, 512, 1024
+    bool reflectionHDR = true;          // Enable HDR rendering
+    float reflectionExposure = 1.2f;    // HDR exposure value
+    float sphereMetallic = 1.0f;        // PBR metallic (0-1)
+    float sphereRoughness = 0.05f;      // PBR roughness (0-1, lower = smoother)
+    bool reflectionLOD = true;          // Enable LOD bias for performance
 
     // Terrain texture state
     unsigned int terrainTextureID = 0;
@@ -206,24 +215,35 @@ struct AppState {
         mirrorSphere.SetPosition(glm::vec3(0.0f, 10.0f, 0.0f)); // Raised above ground for better visibility
         mirrorSphere.SetColor(glm::vec3(1.0f, 1.0f, 1.0f));
 
+        // Apply reflection settings from GPU preset
+        reflectionResolution = gpuInfo.reflectionResolution;
+        reflectionHDR = gpuInfo.reflectionHDR;
+        reflectionLOD = gpuInfo.reflectionLOD;
+        reflectionExposure = gpuInfo.reflectionExposure;
+
         // Initialize reflection cubemap (AFTER GL context is ready!)
-        // Reduced to 256x256 for better performance (was 512)
-        reflectionCubemap = new ReflectionCubemap(256);
+        // Resolution and HDR based on GPU preset
+        reflectionCubemap = new ReflectionCubemap(reflectionResolution, reflectionHDR);
+
+        std::cout << "[Reflection] Resolution: " << reflectionResolution << "x" << reflectionResolution
+                  << ", HDR: " << (reflectionHDR ? "ON" : "OFF")
+                  << ", LOD: " << (reflectionLOD ? "ON" : "OFF")
+                  << ", Exposure: " << reflectionExposure << std::endl;
 
         // Initialize lazy update tracking
         lastReflectionUpdatePos = camera.GetPosition();
+        lastReflectionViewDir = camera.GetFront();
         lastTerrainTextureIndex = -1;
 
-        // Initialize GPU physics world
-        // Settings will be overridden by GPU detection in main.cpp
+        // Initialize GPU physics world with better cloth settings
         GPUPhysicsConfig config;
         config.gravity = glm::vec3(0.0f, -9.81f, 0.0f);
-        config.damping = 0.98f;
-        config.iterations = 2;  // Default (will be overridden by GPU detection)
+        config.damping = 0.99f;        // Less damping - more bouncy
+        config.iterations = 5;         // More iterations - stiffer constraints
         config.collisionMargin = 0.05f;
-        config.dampingFactor = 0.85f;
-        config.frictionFactor = 0.92f;
-        config.collisionSubsteps = 1;  // Default (will be overridden by GPU detection)
+        config.dampingFactor = 0.95f;  // Less damping
+        config.frictionFactor = 0.98f; // Less friction
+        config.collisionSubsteps = 2;  // More substeps for better collision
         physicsWorld.Initialize(config);
 
         // Set collision sphere in physics world

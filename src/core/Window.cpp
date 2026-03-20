@@ -1,6 +1,11 @@
 #include "Window.h"
 #include <iostream>
 
+#ifdef _WIN32
+    #define WIN32_LEAN_AND_MEAN
+    #include <Windows.h>
+#endif
+
 namespace cloth {
 
 Window::Window(const WindowProps& props) : m_Props(props) {
@@ -12,7 +17,9 @@ Window::Window(const WindowProps& props) : m_Props(props) {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, 1); // GL_TRUE = 1
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
+    // Hide window initially to avoid black flash during initialization
+    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
 
     m_Window = glfwCreateWindow(
         m_Props.width,
@@ -29,7 +36,16 @@ Window::Window(const WindowProps& props) : m_Props(props) {
     }
 
     glfwMakeContextCurrent(m_Window);
-    glfwSwapInterval(0); // Disable vsync - prevents black screen issue
+    // Disable vsync for smoother rendering
+    glfwSwapInterval(0);
+    
+#ifdef _WIN32
+    // Extra hide on Windows to prevent any flash
+    HWND hwnd = glfwGetWin32Window(m_Window);
+    ShowWindow(hwnd, SW_HIDE);
+#endif
+    
+    // Window will be shown after first frame is rendered in Application::Run()
 }
 
 Window::~Window() {

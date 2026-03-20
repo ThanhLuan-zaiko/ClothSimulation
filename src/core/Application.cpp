@@ -1,3 +1,8 @@
+#ifdef _WIN32
+    #define WIN32_LEAN_AND_MEAN
+    #include <Windows.h>
+#endif
+
 #include "Application.h"
 #include "AppState.h"
 #include <glad/glad.h>
@@ -41,19 +46,45 @@ Application::~Application() {
 }
 
 void Application::Run() {
+    // Render first frame BEFORE showing window (avoid any black flash)
+    // Clear with BRIGHT sky color
+    glClearColor(0.6f, 0.75f, 1.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    
+    // Call render callback to render full scene
+    if (m_RenderCallback) {
+        m_RenderCallback();
+    }
+    
+    // Swap to display the rendered scene
+    glfwSwapBuffers(m_Window->GetNativeWindow());
+    
+    // NOW show the window (on Windows, use API for smoother show)
+#ifdef _WIN32
+    HWND hwnd = glfwGetWin32Window(m_Window->GetNativeWindow());
+    ShowWindow(hwnd, SW_SHOW);
+    SetForegroundWindow(hwnd);
+    // Force a small delay to ensure window is shown
+    Sleep(10);
+#else
+    glfwShowWindow(m_Window->GetNativeWindow());
+#endif
+    
     while (m_Running && !m_Window->ShouldClose()) {
         // Calculate delta time
         float currentFrame = static_cast<float>(glfwGetTime());
         m_DeltaTime = currentFrame - m_LastFrameTime;
         m_LastFrameTime = currentFrame;
 
-        // Clear buffers - dark blue background
-        glClearColor(0.1f, 0.1f, 0.2f, 1.0f);
+        // Clear buffers - use BRIGHT sky color to avoid black flash
+        glClearColor(0.6f, 0.75f, 1.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        
+
         // Enable depth test with proper depth function
         glEnable(GL_DEPTH_TEST);
-        glDepthFunc(GL_LESS);  // Ensure proper depth comparison
+        glDepthFunc(GL_LESS);
 
         // Update
         if (m_UpdateCallback) {
@@ -71,8 +102,9 @@ void Application::Run() {
         }
 
         // Swap buffers and poll events
-        m_Window->OnUpdate();
         glfwSwapBuffers(m_Window->GetNativeWindow());
+        
+        glfwPollEvents();
     }
 }
 

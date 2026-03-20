@@ -434,7 +434,7 @@ void GPUPhysicsWorld::Update(float deltaTime) {
     // Memory barrier to ensure rendering sees updated data
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
-    // Wait for GPU completion
+    // Wait for GPU completion to ensure physics sync
     glFinish();
 
     // Swap double buffers for next frame

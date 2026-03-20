@@ -3,6 +3,7 @@
 #include <stb_image.h>
 #include <iostream>
 #include <cmath>
+#include <algorithm>
 #include <filesystem>
 #include <vector>
 #include <glm/gtc/constants.hpp>
@@ -127,31 +128,88 @@ void Skybox::LoadTextures(const std::string& folderPath) {
 }
 
 void Skybox::CreateGradientSky() {
-    // Create cubemap with DISTINCT colors for each face (for testing)
+    // Create cubemap with realistic sky gradient and sun direction
     glGenTextures(1, &m_CubemapTexture);
     glBindTexture(GL_TEXTURE_CUBE_MAP, m_CubemapTexture);
 
     int width = 512;
     int height = 512;
 
-    // Generate each face with a consistent Sky Blue color
+    // Sun direction (positive X = east)
+    const float sunX = 1.0f, sunY = 0.3f, sunZ = 0.5f;
+    const float sunLength = sqrt(sunX*sunX + sunY*sunY + sunZ*sunZ);
+    const float sunDirX = sunX / sunLength;
+    const float sunDirY = sunY / sunLength;
+    const float sunDirZ = sunZ / sunLength;
+
+    // Generate each face with gradient and sun
     for (int face = 0; face < 6; face++) {
         std::vector<unsigned char> pixels(width * height * 3);
 
-        float r, g, b;
-        if (face == 2) { // TOP
-            r = 0.5f; g = 0.7f; b = 1.0f; 
-        } else if (face == 3) { // BOTTOM
-            r = 0.7f; g = 0.8f; b = 0.9f;
-        } else { // SIDES
-            r = 0.6f; g = 0.75f; b = 1.0f;
-        }
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                // Normalize coordinates to [-1, 1]
+                float u = (2.0f * x) / width - 1.0f;
+                float v = (2.0f * y) / height - 1.0f;
 
-        // Fill all pixels with the selected blue
-        for (int i = 0; i < width * height; i++) {
-            pixels[i * 3] = static_cast<unsigned char>(r * 255.0f);
-            pixels[i * 3 + 1] = static_cast<unsigned char>(g * 255.0f);
-            pixels[i * 3 + 2] = static_cast<unsigned char>(b * 255.0f);
+                // Get direction for this pixel based on face
+                float dx, dy, dz;
+                switch (face) {
+                    case 0: // POSITIVE_X
+                        dx = 1.0f; dy = -v; dz = -u; break;
+                    case 1: // NEGATIVE_X
+                        dx = -1.0f; dy = -v; dz = u; break;
+                    case 2: // POSITIVE_Y (top)
+                        dx = u; dy = 1.0f; dz = v; break;
+                    case 3: // NEGATIVE_Y (bottom)
+                        dx = u; dy = -1.0f; dz = -v; break;
+                    case 4: // POSITIVE_Z
+                        dx = u; dy = -v; dz = 1.0f; break;
+                    case 5: // NEGATIVE_Z
+                        dx = -u; dy = -v; dz = -1.0f; break;
+                    default:
+                        dx = 1.0f; dy = 0.0f; dz = 0.0f; break;
+                }
+
+                // Normalize direction
+                float len = sqrt(dx*dx + dy*dy + dz*dz);
+                dx /= len; dy /= len; dz /= len;
+
+                // Sky color gradient (horizon to zenith)
+                float horizonHeight = 0.0f;
+                float zenithHeight = 1.0f;
+                float t = (dy - horizonHeight) / (zenithHeight - horizonHeight);
+                t = std::max(0.0f, std::min(1.0f, t));
+
+                // Horizon color (light orange/blue mix)
+                float rHorizon = 0.9f, gHorizon = 0.8f, bHorizon = 0.7f;
+                // Zenith color (deep blue)
+                float rZenith = 0.3f, gZenith = 0.5f, bZenith = 0.85f;
+
+                float r = rHorizon + (rZenith - rHorizon) * t;
+                float g = gHorizon + (gZenith - gHorizon) * t;
+                float b = bHorizon + (bZenith - bHorizon) * t;
+
+                // Add sun glow
+                float sunDot = dx * sunDirX + dy * sunDirY + dz * sunDirZ;
+                if (sunDot > 0.0f) {
+                    float sunGlow = pow(sunDot, 32.0f) * 2.0f; // Sun disk
+                    float sunHalo = pow(sunDot, 8.0f) * 0.5f;  // Sun halo
+                    r += sunGlow + sunHalo;
+                    g += sunGlow * 0.9f + sunHalo * 0.8f;
+                    b += sunGlow * 0.7f + sunHalo * 0.6f;
+                }
+
+                // Clamp colors
+                r = std::max(0.0f, std::min(1.0f, r));
+                g = std::max(0.0f, std::min(1.0f, g));
+                b = std::max(0.0f, std::min(1.0f, b));
+
+                int idx = (y * width + x) * 3;
+                pixels[idx] = static_cast<unsigned char>(r * 255.0f);
+                pixels[idx + 1] = static_cast<unsigned char>(g * 255.0f);
+                pixels[idx + 2] = static_cast<unsigned char>(b * 255.0f);
+            }
         }
 
         glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, pixels.data());
@@ -162,6 +220,8 @@ void Skybox::CreateGradientSky() {
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+
+    std::cout << "[Skybox] Created procedural sky with sun direction: (" << sunDirX << ", " << sunDirY << ", " << sunDirZ << ")" << std::endl;
 }
 
 void Skybox::LoadCubemap(const std::vector<std::string>& faces) {

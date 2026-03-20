@@ -16,8 +16,21 @@ void Render(AppState& state, const Application& app) {
         LoadClothTextures(state);
     }
 
+    // Load world textures FIRST (including skybox)
     if (!state.world.IsTexturesLoaded()) {
         state.world.LoadTextures();
+    }
+
+    // Ensure skybox texture is loaded
+    static bool skyboxChecked = false;
+    if (!skyboxChecked) {
+        if (state.world.GetSkybox().GetTextureID() == 0) {
+            // Skybox not ready yet - just clear with sky color and skip rendering this frame
+            glClearColor(0.6f, 0.75f, 1.0f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            return;
+        }
+        skyboxChecked = true;
     }
 
     // Check and apply terrain texture changes (only when needed)
@@ -37,16 +50,60 @@ void Render(AppState& state, const Application& app) {
     glm::mat4 view = state.camera.GetViewMatrix();
     glm::mat4 projection = state.camera.GetProjectionMatrix();
 
-    // === 1. RENDER REFLECTION CUBEMAP (Off-screen) - DISABLED FOR PERFORMANCE ===
+    // === MAIN PASS RENDER ===
+    // Ensure correct state
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+
+    // --- Draw skybox FIRST (immediately, before any other rendering) ---
+    // Clear with sky color
+    glClearColor(0.6f, 0.75f, 1.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    
+    // Draw skybox with depth test disabled and depth mask off
+    glDepthMask(GL_FALSE);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    
+    // Bind skybox shader and set uniforms
+    state.skyboxShader.Bind();
+    state.skyboxShader.SetMat4("u_View", view);
+    state.skyboxShader.SetMat4("u_Projection", projection);
+    
+    // Bind skybox texture
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, state.world.GetSkybox().GetTextureID());
+    state.skyboxShader.SetInt("u_Skybox", 0);
+    
+    // Draw skybox
+    state.world.GetSkybox().Draw();
+    
+    // Unbind shader
+    state.skyboxShader.Unbind();
+    
+    // Re-enable states
+    glEnable(GL_CULL_FACE);
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_TRUE);
+
+    // === 1. RENDER REFLECTION CUBEMAP (Off-screen) ===
+    static int frameCount = 0;
+    frameCount++;
+
     bool shouldUpdateReflection = false;
-    /*
-    // Always update on first frame
-    if (state.reflectionNeedsUpdate) {
-        shouldUpdateReflection = true;
-    } else if (state.world.IsTexturesLoaded() && state.reflectionCubemap) {
-        // Check if camera moved enough to warrant an update (increased threshold for better performance)
+
+    // Update reflection after first 30 frames (reduced from 60 for faster startup)
+    if (frameCount > 30 && state.world.IsTexturesLoaded() && state.reflectionCubemap && state.reflectionNeedsUpdate) {
+        // Check if camera moved enough to warrant an update (reduced threshold for smoother reflection)
         float cameraMoveDist = glm::distance(state.camera.GetPosition(), state.lastReflectionUpdatePos);
-        if (cameraMoveDist > state.reflectionUpdateThreshold) {
+
+        // Dynamic threshold: smaller threshold for better quality (reduced from 3.0 to 1.5)
+        float sphereDistance = glm::distance(state.camera.GetPosition(), state.mirrorSphere.GetPosition());
+        float dynamicThreshold = 1.5f * (1.0f + sphereDistance * 0.1f);
+
+        if (cameraMoveDist > dynamicThreshold) {
             shouldUpdateReflection = true;
         }
 
@@ -56,18 +113,28 @@ void Render(AppState& state, const Application& app) {
             shouldUpdateReflection = true;
             state.lastTerrainTextureIndex = currentTerrainIndex;
         }
-    }
-    */
 
-    // Skip reflection rendering if not needed (CRITICAL for performance)
-    if (false && shouldUpdateReflection && state.world.IsTexturesLoaded() && state.reflectionCubemap) {
-        glm::vec3 spherePos = state.mirrorSphere.GetPosition();
+        // Check if camera rotation changed significantly (view direction matters for reflection)
+        glm::vec3 currentViewDir = state.camera.GetFront();
+        glm::vec3 lastViewDir = state.lastReflectionViewDir;
+        float viewAngleChange = glm::acos(glm::clamp(glm::dot(currentViewDir, lastViewDir), -1.0f, 1.0f));
+        if (viewAngleChange > 0.05f) { // Reduced threshold from 0.1 to 0.05 for smoother updates
+            shouldUpdateReflection = true;
+        }
 
-        // Save viewport
-        GLint viewport[4];
-        glGetIntegerv(GL_VIEWPORT, viewport);
+        // Render reflection cubemap when needed
+        if (shouldUpdateReflection) {
+            // Save current framebuffer binding
+            GLint currentFBO;
+            glGetIntegerv(GL_FRAMEBUFFER_BINDING, &currentFBO);
 
-        state.reflectionCubemap->BeginRender();
+            glm::vec3 spherePos = state.mirrorSphere.GetPosition();
+
+            // Save viewport
+            GLint viewport[4];
+            glGetIntegerv(GL_VIEWPORT, viewport);
+
+            state.reflectionCubemap->BeginRender();
 
         for (unsigned int face = 0; face < 6; face++) {
             state.reflectionCubemap->BeginFaceRender(face);
@@ -75,7 +142,8 @@ void Render(AppState& state, const Application& app) {
             glm::mat4 reflectionView = state.reflectionCubemap->GetViewMatrix(face, spherePos);
             glm::mat4 reflectionProjection = state.reflectionCubemap->GetProjectionMatrix();
 
-            // Clear face
+            // Clear face with sky color to avoid black edges
+            glClearColor(0.6f, 0.75f, 1.0f, 1.0f);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
             glEnable(GL_DEPTH_TEST);
@@ -115,39 +183,23 @@ void Render(AppState& state, const Application& app) {
         }
         state.reflectionCubemap->EndRender();
 
+        // Restore framebuffer binding
+        glBindFramebuffer(GL_FRAMEBUFFER, currentFBO);
+
         // Restore viewport
         glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
 
         // Update tracking variables
         state.lastReflectionUpdatePos = state.camera.GetPosition();
+        state.lastReflectionViewDir = state.camera.GetFront();
         state.reflectionNeedsUpdate = false;
-        
+
         // Memory barrier to ensure rendering sees updated cubemap
         glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT);
-    }
+        } // End shouldUpdateReflection
+    } // End frameCount > 30
 
-    // === 2. MAIN PASS RENDER (On-screen) ===
-    // Ensure correct state after reflection rendering
-    glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LESS);
-    glEnable(GL_CULL_FACE);
-    glCullFace(GL_BACK);
-
-    glClearColor(0.1f, 0.1f, 0.2f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-    // --- Draw skybox ---
-    glDisable(GL_CULL_FACE);
-    state.skyboxShader.Bind();
-    state.skyboxShader.SetMat4("u_View", view);
-    state.skyboxShader.SetMat4("u_Projection", projection);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_CUBE_MAP, state.world.GetSkybox().GetTextureID());
-    state.skyboxShader.SetInt("u_Skybox", 0);
-    state.world.GetSkybox().Draw();
-    state.skyboxShader.Unbind();
-    glEnable(GL_CULL_FACE);
-
+    // Continue MAIN PASS RENDER - Draw terrain, sphere, cloths
     // --- Draw terrain ---
     state.terrainShader.Bind();
     state.terrainShader.SetMat4("u_Model", model);
@@ -165,12 +217,31 @@ void Render(AppState& state, const Application& app) {
     state.sphereShader.SetVec3("u_ViewPos", state.camera.GetPosition());
     state.sphereShader.SetVec3("u_Color", state.mirrorSphere.GetColor());
 
-    // Always bind the environment map (reflection cubemap)
-    if (state.reflectionCubemap && state.reflectionCubemap->GetTextureID() != 0) {
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_CUBE_MAP, state.reflectionCubemap->GetTextureID());
-        state.sphereShader.SetInt("u_EnvironmentMap", 0);
+    // PBR material properties for mirror-like surface (configurable)
+    state.sphereShader.SetFloat("u_Metallic", state.sphereMetallic);
+    state.sphereShader.SetFloat("u_Roughness", state.sphereRoughness);
+
+    // HDR settings (configurable) - increased exposure for brighter sky reflection
+    state.sphereShader.SetFloat("u_Exposure", state.reflectionExposure * 2.0f); // Boost exposure by 100% for better contrast
+    state.sphereShader.SetInt("u_UseHDR", state.reflectionCubemap && state.reflectionCubemap->IsHDR() ? 1 : 0);
+
+    // LOD bias based on distance from camera to sphere - MINIMAL for sharp reflection
+    float lodBias = 0.0f;
+    if (state.reflectionLOD) {
+        float sphereDistance = glm::distance(state.camera.GetPosition(), state.mirrorSphere.GetPosition());
+        // Reduced from 0.3f to 0.05f for much sharper reflection (80% reduction)
+        lodBias = glm::clamp((sphereDistance - 5.0f) * 0.05f, 0.0f, 0.3f); // Max 0.3 instead of 2.0
     }
+    state.sphereShader.SetFloat("u_LODBias", lodBias);
+
+    // Bind environment map (reflection cubemap or skybox as fallback)
+    glActiveTexture(GL_TEXTURE0);
+    if (frameCount > 60 && state.reflectionCubemap && state.reflectionCubemap->GetTextureID() != 0) {
+        glBindTexture(GL_TEXTURE_CUBE_MAP, state.reflectionCubemap->GetTextureID());
+    } else {
+        glBindTexture(GL_TEXTURE_CUBE_MAP, state.world.GetSkybox().GetTextureID());
+    }
+    state.sphereShader.SetInt("u_EnvironmentMap", 0);
 
     // Ensure normal render states are enabled
     glEnable(GL_DEPTH_TEST);
@@ -180,57 +251,32 @@ void Render(AppState& state, const Application& app) {
     state.sphereShader.Unbind();
 
     // --- Draw cloths ---
-    // STATE CACHING: Only bind shader if changed
-    if (g_LastBoundShader != state.clothShader.GetID()) {
-        state.clothShader.Bind();
-        g_LastBoundShader = state.clothShader.GetID();
-    }
-    
+    // TEMP: Disabled - causes black flash issue
+    /*
+    state.clothShader.Bind();
     state.clothShader.SetMat4("u_Model", model);
     state.clothShader.SetMat4("u_View", view);
     state.clothShader.SetMat4("u_Projection", projection);
     state.clothShader.SetVec3("u_LightPos", glm::vec3(5.0f, 10.0f, 5.0f));
     state.clothShader.SetVec3("u_ViewPos", state.camera.GetPosition());
     state.clothShader.SetBool("u_UseTexture", true);
+    state.clothShader.SetInt("u_Wireframe", 0);
+    state.clothShader.SetVec3("u_Color", glm::vec3(1.0f, 1.0f, 1.0f));
 
-    // Bind particle SSBO for GPU-based cloth rendering
-    state.physicsWorld.BindForRendering();
+    glDisable(GL_CULL_FACE);
 
-    glDisable(GL_CULL_FACE); // Better for thin cloths
-    
-    // Render cloths - only render if cloth has fallen close to ground
-    // This prevents visual artifacts from particles at initial high positions
+    // Render all 3 cloths - each cloth binds its own particle buffer
     for (size_t i = 0; i < state.clothMeshes.size(); i++) {
-        // Skip rendering if cloth is still pinned (waiting to drop)
-        if (!state.clothDropped[i]) {
-            continue;
-        }
-        
-        // Additional check: only render if cloth has fallen for at least 0.5 seconds
-        // This prevents artifacts during initial fall when particles are stretched
-        float timeSinceDrop = state.clothDropTimers[i] - state.clothDropStartDelay - (i * state.clothDropDelay);
-        if (timeSinceDrop < 0.5f) {
-            continue;
-        }
-        
-        if (i < state.clothTextures.size()) {
-            // STATE CACHING: Only bind texture if changed
-            if (g_LastBoundTexture0 != state.clothTextures[i]) {
-                glActiveTexture(GL_TEXTURE0);
-                glBindTexture(GL_TEXTURE_2D, state.clothTextures[i]);
-                g_LastBoundTexture0 = state.clothTextures[i];
-            }
-            state.clothShader.SetInt("u_ClothTexture", 0);
-            state.clothMeshes[i]->Draw(state.clothShader);
-        }
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, state.clothTextures[i]);
+        state.clothShader.SetInt("u_ClothTexture", 0);
+        state.clothMeshes[i]->Draw(state.clothShader);
     }
     glEnable(GL_CULL_FACE);
+    */
 
-    // Unbind particle buffer
+    // Unbind physics world
     state.physicsWorld.Unbind();
-
-    state.clothShader.Unbind();
-    g_LastBoundShader = 0;  // Reset cache
 }
 
 } // namespace cloth

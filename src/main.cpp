@@ -159,21 +159,28 @@ int main() {
     // Pre-load world textures
     state.world.LoadTextures();
 
+    // Initialize reflection cubemap with sky color to avoid black flash
+    if (state.reflectionCubemap && state.world.IsTexturesLoaded()) {
+        state.reflectionCubemap->InitializeWithSkybox(state.world.GetSkybox().GetTextureID());
+        // Force reflection update on first render
+        state.reflectionNeedsUpdate = true;
+    }
+
+    // Update collision sphere position (ensure it matches the mirror sphere)
+    state.physicsWorld.SetCollisionSphere(state.mirrorSphere.GetPosition(), state.mirrorSphere.GetRadius());
+
     // Create 3 cloths that will drop gracefully onto the mirror sphere
     // Each cloth starts high above and falls down with a delay
     // For GPU physics, we initialize cloth data directly on GPU
-    
-    // Track cumulative particle offsets for correct unpinning
-    size_t cumulativeParticleOffset = 0;
 
-    // Cloth 1 - First to drop (starts at y=25) - RESOLUTION BASED ON GPU
+    // Cloth 1 - First to drop (starts at y=35, slightly offset from center)
     ClothConfig clothConfig1;
     clothConfig1.widthSegments = state.gpuInfo.clothResolution[0];
     clothConfig1.heightSegments = state.gpuInfo.clothResolution[0];
     clothConfig1.segmentLength = 0.12f;
-    clothConfig1.startX = -3.6f;
-    clothConfig1.startY = 25.0f;
-    clothConfig1.startZ = -3.6f;
+    clothConfig1.startX = -0.5f;   // Slightly left of center
+    clothConfig1.startY = 35.0f;   // High above sphere
+    clothConfig1.startZ = 0.5f;    // Slightly forward
 
     size_t cloth1Offset = state.physicsWorld.InitializeCloth(
         clothConfig1.widthSegments, clothConfig1.heightSegments,
@@ -185,24 +192,23 @@ int main() {
     Cloth* dummyCloth1 = new Cloth(state.physicsWorld, clothConfig1);
     ClothMesh* clothMesh1 = new ClothMesh(*dummyCloth1);
     clothMesh1->SetGPUBased(true);
-    clothMesh1->SetParticleBuffer(&state.physicsWorld.GetParticleBuffer(), cloth1Offset);
+    clothMesh1->SetParticleBuffer(&state.physicsWorld.GetParticleBuffer(), cloth1Offset);  // Use offset from InitializeCloth
     state.cloths.push_back(dummyCloth1);
     state.clothMeshes.push_back(clothMesh1);
     state.clothDropTimers.push_back(0.0f);
     state.clothDropped.push_back(false);
     size_t cloth1Count = (clothConfig1.widthSegments + 1) * (clothConfig1.heightSegments + 1);
     state.clothParticleCounts.push_back(cloth1Count);
-    state.clothParticleOffsets.push_back(cumulativeParticleOffset);  // Track offset
-    cumulativeParticleOffset += cloth1Count;
+    state.clothParticleOffsets.push_back(cloth1Offset);  // Track offset
 
-    // Cloth 2 - Second to drop (starts at y=28, offset) - RESOLUTION BASED ON GPU
+    // Cloth 2 - Second to drop (starts at y=40, centered over sphere)
     ClothConfig clothConfig2;
     clothConfig2.widthSegments = state.gpuInfo.clothResolution[1];
     clothConfig2.heightSegments = state.gpuInfo.clothResolution[1];
     clothConfig2.segmentLength = 0.12f;
-    clothConfig2.startX = -3.3f;
-    clothConfig2.startY = 28.0f;
-    clothConfig2.startZ = -3.3f;
+    clothConfig2.startX = 0.0f;    // Centered over sphere
+    clothConfig2.startY = 40.0f;   // Higher than cloth 1
+    clothConfig2.startZ = -1.5f;   // Slightly behind sphere
 
     size_t cloth2Offset = state.physicsWorld.InitializeCloth(
         clothConfig2.widthSegments, clothConfig2.heightSegments,
@@ -213,24 +219,23 @@ int main() {
     Cloth* dummyCloth2 = new Cloth(state.physicsWorld, clothConfig2);
     ClothMesh* clothMesh2 = new ClothMesh(*dummyCloth2);
     clothMesh2->SetGPUBased(true);
-    clothMesh2->SetParticleBuffer(&state.physicsWorld.GetParticleBuffer(), cloth2Offset);
+    clothMesh2->SetParticleBuffer(&state.physicsWorld.GetParticleBuffer(), cloth2Offset);  // Use offset from InitializeCloth
     state.cloths.push_back(dummyCloth2);
     state.clothMeshes.push_back(clothMesh2);
     state.clothDropTimers.push_back(0.0f);
     state.clothDropped.push_back(false);
     size_t cloth2Count = (clothConfig2.widthSegments + 1) * (clothConfig2.heightSegments + 1);
     state.clothParticleCounts.push_back(cloth2Count);
-    state.clothParticleOffsets.push_back(cumulativeParticleOffset);  // Track offset
-    cumulativeParticleOffset += cloth2Count;
+    state.clothParticleOffsets.push_back(cloth2Offset);  // Track offset
 
-    // Cloth 3 - Third to drop (starts at y=31, offset) - RESOLUTION BASED ON GPU
+    // Cloth 3 - Third to drop (starts at y=45, opposite diagonal)
     ClothConfig clothConfig3;
     clothConfig3.widthSegments = state.gpuInfo.clothResolution[2];
     clothConfig3.heightSegments = state.gpuInfo.clothResolution[2];
     clothConfig3.segmentLength = 0.12f;
-    clothConfig3.startX = -3.3f;
-    clothConfig3.startY = 31.0f;
-    clothConfig3.startZ = -3.3f;
+    clothConfig3.startX = 0.8f;    // Right side, closer to center (adjusted from 1.8f)
+    clothConfig3.startY = 45.0f;   // Highest
+    clothConfig3.startZ = 1.0f;    // Slightly forward (adjusted from 0.0f)
 
     size_t cloth3Offset = state.physicsWorld.InitializeCloth(
         clothConfig3.widthSegments, clothConfig3.heightSegments,
@@ -241,20 +246,16 @@ int main() {
     Cloth* dummyCloth3 = new Cloth(state.physicsWorld, clothConfig3);
     ClothMesh* clothMesh3 = new ClothMesh(*dummyCloth3);
     clothMesh3->SetGPUBased(true);
-    clothMesh3->SetParticleBuffer(&state.physicsWorld.GetParticleBuffer(), cloth3Offset);
+    clothMesh3->SetParticleBuffer(&state.physicsWorld.GetParticleBuffer(), cloth3Offset);  // Use offset from InitializeCloth
     state.cloths.push_back(dummyCloth3);
     state.clothMeshes.push_back(clothMesh3);
     state.clothDropTimers.push_back(0.0f);
     state.clothDropped.push_back(false);
     size_t cloth3Count = (clothConfig3.widthSegments + 1) * (clothConfig3.heightSegments + 1);
     state.clothParticleCounts.push_back(cloth3Count);
-    state.clothParticleOffsets.push_back(cumulativeParticleOffset);  // Track offset
-    cumulativeParticleOffset += cloth3Count;
-    
-    // Re-set particle buffer references after all cloths are created
-    clothMesh1->SetParticleBuffer(&state.physicsWorld.GetParticleBuffer(), 0);
-    clothMesh2->SetParticleBuffer(&state.physicsWorld.GetParticleBuffer(), cloth1Count);
-    clothMesh3->SetParticleBuffer(&state.physicsWorld.GetParticleBuffer(), cloth1Count + cloth2Count);
+    state.clothParticleOffsets.push_back(cloth3Offset);  // Track offset
+
+    // DO NOT re-set particle buffer references - already set correctly above!
 
     // Set update callback
     app.SetUpdateCallback([&](float deltaTime) {
@@ -265,7 +266,6 @@ int main() {
 
         HandleInput(state, deltaTime);
 
-        // PHYSICS ENABLED: Optimized for Intel UHD 620 with batch dispatch
         // Update cloth drop timers and release cloths when it's time to fall
         for (size_t i = 0; i < state.cloths.size(); i++) {
             if (!state.clothDropped[i]) {
@@ -294,7 +294,7 @@ int main() {
         Render(state, app);
     });
 
-    // Run application
+    // Run application (window will show after first frame rendered)
     app.Run();
 
     return 0;

@@ -16,7 +16,7 @@ ClothMesh::ClothMesh(Cloth& cloth)
     glGenBuffers(1, &m_EBO);
 
     BuildMesh();
-    UpdateBuffer();
+    UpdateBuffer();  // Update VBO with texcoords for GPU rendering
 }
 
 ClothMesh::~ClothMesh() {
@@ -35,24 +35,20 @@ void ClothMesh::BuildMesh() {
     m_Vertices.clear();
     m_Indices.clear();
 
-    const auto& particles = m_Cloth.GetParticles();
     int width = m_Cloth.GetWidthSegments();
     int height = m_Cloth.GetHeightSegments();
 
-    // Build vertices
+    // Build vertices directly from grid (not from particles - GPU cloth has no CPU particles)
     for (int y = 0; y <= height; y++) {
         for (int x = 0; x <= width; x++) {
-            int index = y * (width + 1) + x;
-            if (index < static_cast<int>(particles.size())) {
-                Vertex vertex;
-                vertex.position = particles[index]->position;
-                vertex.normal = glm::vec3(0.0f, 0.0f, 1.0f); // Default normal
-                vertex.texCoord = glm::vec2(
-                    static_cast<float>(x) / width,
-                    static_cast<float>(y) / height
-                );
-                m_Vertices.push_back(vertex);
-            }
+            Vertex vertex;
+            vertex.position = glm::vec3(0.0f, 0.0f, 0.0f);
+            vertex.normal = glm::vec3(0.0f, 1.0f, 0.0f);
+            vertex.texCoord = glm::vec2(
+                static_cast<float>(x) / static_cast<float>(width),
+                static_cast<float>(y) / static_cast<float>(height)
+            );
+            m_Vertices.push_back(vertex);
         }
     }
 
@@ -64,12 +60,10 @@ void ClothMesh::BuildMesh() {
             int bottomLeft = (y + 1) * (width + 1) + x;
             int bottomRight = bottomLeft + 1;
 
-            // First triangle
             m_Indices.push_back(topLeft);
             m_Indices.push_back(bottomLeft);
             m_Indices.push_back(topRight);
 
-            // Second triangle
             m_Indices.push_back(topRight);
             m_Indices.push_back(bottomLeft);
             m_Indices.push_back(bottomRight);
@@ -110,17 +104,18 @@ void ClothMesh::Update() {
 }
 
 void ClothMesh::UpdateBuffer() {
-    if (!m_IsDirty || m_GPUBased) return;
+    if (!m_IsDirty) return;
 
     glBindVertexArray(m_VAO);
 
+    // Always update VBO with vertex data (for texcoords and normals)
     glBindBuffer(GL_ARRAY_BUFFER, m_VBO);
-    glBufferData(GL_ARRAY_BUFFER, m_Vertices.size() * sizeof(Vertex), m_Vertices.data(), GL_DYNAMIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, m_Vertices.size() * sizeof(Vertex), m_Vertices.data(), GL_STATIC_DRAW);
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_EBO);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, m_Indices.size() * sizeof(unsigned int), m_Indices.data(), GL_STATIC_DRAW);
 
-    // Position attribute
+    // Position attribute (will be overridden by GPU buffer if using GPU rendering)
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)0);
 
@@ -141,38 +136,42 @@ void ClothMesh::BindForGPURendering() const {
 
     glBindVertexArray(m_VAO);
 
-    // Bind interleaved particle buffer as VBO (reading positions from GPU SSBO)
-    // ParticleData layout: position(16) + prevPosition(16) + velocity(16) = 48 bytes
+    // Bind particle SSBO for position data (location 0)
     glBindBuffer(GL_ARRAY_BUFFER, m_ParticleBuffer->GetBufferID());
 
-    // Re-setup vertex attributes to read from SSBO
-    // Position attribute (location 0) - offset 0 in ParticleData (48 bytes total)
+    // Position attribute (location 0) - from GPU particle buffer WITH OFFSET
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(ParticleData), (void*)0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(ParticleData),
+                          (void*)(m_ParticleOffset * sizeof(ParticleData)));
 
-    // Note: Normals are still calculated on CPU and stored in VBO
-    // For full GPU skinning, we'd need a separate normal calculation in compute shader
+    // Normals: Use constant up vector (no GPU normals)
+    // Keep attribute enabled but use constant vertex attribute
+    glEnableVertexAttribArray(1);
+    glVertexAttrib3f(1, 0.0f, 1.0f, 0.0f);
 
+    // TexCoord attribute (location 2) - from CPU VBO (static, never changes)
+    glBindBuffer(GL_ARRAY_BUFFER, m_VBO);
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, texCoord));
+
+    // IMPORTANT: Re-bind particle buffer for position AND EBO
+    glBindBuffer(GL_ARRAY_BUFFER, m_ParticleBuffer->GetBufferID());
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_EBO);
 }
 
 void ClothMesh::Unbind() const {
     glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
     glBindVertexArray(0);
 }
 
 void ClothMesh::Draw(const Shader& shader) {
     if (m_GPUBased && m_ParticleBuffer) {
-        // Bind buffer mỗi frame (phòng trường hợp buffer ID thay đổi)
         BindForGPURendering();
-
         glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(m_Indices.size()), GL_UNSIGNED_INT, 0);
-
         Unbind();
     } else {
-        // CPU-based rendering (legacy)
         Update();
-
         glBindVertexArray(m_VAO);
         glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(m_Indices.size()), GL_UNSIGNED_INT, 0);
         glBindVertexArray(0);

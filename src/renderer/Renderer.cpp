@@ -152,48 +152,37 @@ void LoadClothTextures(AppState& state) {
         GetAssetPath("assets/cloths/floral_jacquard_diff_4k.jpg")
     };
 
-    // ASYNC TEXTURE LOADING: Load textures in parallel
-    std::vector<std::future<std::pair<unsigned char*, int>>> loadFutures;
-
-    // Start async loading for each texture
+    // Load textures synchronously
     for (size_t i = 0; i < clothTexturePaths.size(); i++) {
-        loadFutures.push_back(std::async(std::launch::async, [path = clothTexturePaths[i]]() {
-            stbi_set_flip_vertically_on_load(1);
-            int w, h, c;
-            unsigned char* data = stbi_load(path.c_str(), &w, &h, &c, 0);
-            return std::make_pair(data, w * 10000 + h * 100 + c);
-        }));
-    }
-
-    // Create OpenGL textures and upload data
-    for (size_t i = 0; i < loadFutures.size() && i < state.clothMeshes.size(); i++) {
-        auto result = loadFutures[i].get();
-        unsigned char* data = result.first;
-        int packed = result.second;
-        int width = packed / 10000;
-        int height = (packed % 10000) / 100;
-        int channels = packed % 100;
-
+        stbi_set_flip_vertically_on_load(1);
+        int width, height, channels;
+        unsigned char* data = stbi_load(clothTexturePaths[i].c_str(), &width, &height, &channels, 0);
+        
         unsigned int textureID;
         glGenTextures(1, &textureID);
         glBindTexture(GL_TEXTURE_2D, textureID);
 
         if (data) {
             GLenum format = (channels == 4) ? GL_RGBA : GL_RGB;
-            glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, width, height, 0, format, GL_UNSIGNED_BYTE, data);
             glGenerateMipmap(GL_TEXTURE_2D);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 8);
             stbi_image_free(data);
         } else {
-            std::cerr << "Failed to load cloth texture: " << clothTexturePaths[i] << std::endl;
+            std::cerr << "[ClothTextures] Failed to load: " << clothTexturePaths[i] << std::endl;
+            // Create a default 1x1 white texture as fallback
+            unsigned char whitePixel[] = {255, 255, 255};
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 1, 1, 0, GL_RGB, GL_UNSIGNED_BYTE, whitePixel);
+            glGenerateMipmap(GL_TEXTURE_2D);
         }
 
         state.clothTextures.push_back(textureID);
     }
-    
+
     state.clothTexturesLoaded = true;
 }
 
