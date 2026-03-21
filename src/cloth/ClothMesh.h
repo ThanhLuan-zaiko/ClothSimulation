@@ -23,6 +23,7 @@ public:
 
     // GPU-specific methods
     void SetParticleBuffer(const ParticleBuffer* buffer, size_t offset = 0);
+    void UpdateGPUVAO();  // Update GPU VAO after buffer resize
     void BindForGPURendering() const;
     void Unbind() const;
 
@@ -53,6 +54,7 @@ private:
     // GPU buffer reference
     const ParticleBuffer* m_ParticleBuffer;
     size_t m_ParticleOffset;
+    unsigned int m_LastKnownBufferID;  // Track buffer ID to detect changes
 
     void BuildMesh();
     void UpdateBuffer();

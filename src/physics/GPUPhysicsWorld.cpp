@@ -272,112 +272,70 @@ size_t GPUPhysicsWorld::InitializeCloth(int widthSegments, int heightSegments,
         }
     }
 
-    // Upload to GPU - Use SINGLE BUFFER (double buffering causes sync issues)
+    // Upload to GPU - PRE-ALLOCATE large buffer for all 3 cloths (~20000 particles max)
+    const size_t MAX_PARTICLES = 20000;
+    const size_t MAX_CONSTRAINTS = 60000;
+    
     if (m_TotalParticles == 0) {
-        // Add 1 dummy particle at index 0 to avoid offset 0 for cloth 1
-        std::vector<ParticleData> particlesWithDummy(numParticles + 1);
-        
-        // Dummy particle at high position (won't interfere with simulation)
-        particlesWithDummy[0].position = glm::vec4(0.0f, 10000.0f, 0.0f, 1.0f);
-        particlesWithDummy[0].prevPosition = particlesWithDummy[0].position;
-        particlesWithDummy[0].velocity = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);  // pinned
-        
-        // Copy actual particles starting at index 1
-        for (size_t i = 0; i < numParticles; i++) {
-            particlesWithDummy[i + 1] = particles[i];
+        // First cloth - allocate maximum buffer size upfront
+        std::vector<ParticleData> particles(numParticles);
+
+        for (int y = 0; y <= heightSegments; y++) {
+            for (int x = 0; x <= widthSegments; x++) {
+                int idx = y * (widthSegments + 1) + x;
+                particles[idx].position = glm::vec4(
+                    startX + x * segmentLength,
+                    startY,
+                    startZ + y * segmentLength,
+                    1.0f  // mass
+                );
+                particles[idx].prevPosition = particles[idx].position;
+                particles[idx].velocity = glm::vec4(0.0f, 0.0f, 0.0f, pinned ? 1.0f : 0.0f);
+            }
         }
-        
-        m_ParticleBuffer.Initialize(numParticles + 1);  // Single buffer
-        m_ParticleBuffer.UploadData(particlesWithDummy);
-        
-        // Create pinned flags buffer
-        std::vector<float> pinnedFlags(numParticles + 1, 1.0f);  // All pinned by default
+
+        // Allocate MAX buffer size upfront
+        m_ParticleBuffer.Initialize(MAX_PARTICLES);
+        m_ParticleBuffer.UploadSubset(0, particles.size(), particles);
+
+        // Create pinned flags buffer with MAX size
+        std::vector<float> pinnedFlags(MAX_PARTICLES, 1.0f);  // All pinned by default
+        m_PinnedFlagsCPU.resize(MAX_PARTICLES, 1.0f);
         glGenBuffers(1, &m_PinnedFlagsBuffer);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_PinnedFlagsBuffer);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, pinnedFlags.size() * sizeof(float), 
+        glBufferData(GL_SHADER_STORAGE_BUFFER, pinnedFlags.size() * sizeof(float),
                      pinnedFlags.data(), GL_DYNAMIC_DRAW);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
-        m_ConstraintBuffer.Initialize(numConstraints);
-        m_ConstraintBuffer.UploadData(constraints);
+        // Allocate MAX constraint buffer size
+        m_ConstraintBuffer.Initialize(MAX_CONSTRAINTS);
+        m_ConstraintBuffer.UploadSubset(0, constraints.size(), constraints);
 
-        m_TotalParticles = numParticles + 1;  // Include dummy particle
+        m_TotalParticles = numParticles;  // No dummy particle
         m_TotalConstraints = numConstraints;
-        
-        // Return offset 1 (skip dummy particle)
-        return 1;
+
+        // Return offset 0 (no dummy particle)
+        return 0;
     } else {
-        // Subsequent cloths - need to resize buffers
+        // Subsequent cloths - append to existing buffer
         size_t newTotalParticles = m_TotalParticles + numParticles;
         size_t newTotalConstraints = m_TotalConstraints + numConstraints;
 
-        // Download existing particles
-        std::vector<ParticleData> existingParticles = m_ParticleBuffer.DownloadData();
+        // Upload new particles at offset
+        m_ParticleBuffer.UploadSubset(m_TotalParticles, numParticles, particles);
 
-        // Create combined particle array
-        std::vector<ParticleData> combinedParticles(newTotalParticles);
-
-        // Copy existing particles WITH THEIR PINNED STATE
-        for (size_t i = 0; i < m_TotalParticles && i < existingParticles.size(); i++) {
-            combinedParticles[i] = existingParticles[i];
+        // Update pinned flags for new particles (they start pinned)
+        for (size_t i = m_TotalParticles; i < newTotalParticles; i++) {
+            m_PinnedFlagsCPU[i] = 1.0f;
         }
-
-        // Add new particles at offset
-        for (size_t i = 0; i < numParticles; i++) {
-            combinedParticles[m_TotalParticles + i] = particles[i];
-        }
-
-        // Re-initialize particle buffer with new size
-        m_ParticleBuffer.Initialize(newTotalParticles);
-        m_ParticleBuffer.UploadData(combinedParticles);
-        
-        // Resize pinned flags buffer
-        std::vector<float> existingFlags(m_TotalParticles, 1.0f);
-        if (m_PinnedFlagsBuffer != 0) {
-            glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_PinnedFlagsBuffer);
-            float* flagsPtr = static_cast<float*>(glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 
-                                                                   0, 
-                                                                   m_TotalParticles * sizeof(float),
-                                                                   GL_MAP_READ_BIT));
-            if (flagsPtr) {
-                memcpy(existingFlags.data(), flagsPtr, m_TotalParticles * sizeof(float));
-                glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
-            }
-            glDeleteBuffers(1, &m_PinnedFlagsBuffer);
-        }
-        
-        // Create new pinned flags buffer with expanded size
-        std::vector<float> newPinnedFlags(newTotalParticles, 1.0f);
-        for (size_t i = 0; i < m_TotalParticles; i++) {
-            newPinnedFlags[i] = existingFlags[i];
-        }
-        // New particles are pinned by default (velocity.w = 1.0)
-        
-        glGenBuffers(1, &m_PinnedFlagsBuffer);
+        // Upload updated pinned flags
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_PinnedFlagsBuffer);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, newPinnedFlags.size() * sizeof(float), 
-                     newPinnedFlags.data(), GL_DYNAMIC_DRAW);
+        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, m_PinnedFlagsCPU.size() * sizeof(float),
+                        m_PinnedFlagsCPU.data());
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
-        // Download existing constraints
-        std::vector<ConstraintData> existingConstraints = m_ConstraintBuffer.DownloadData();
-
-        // Create combined constraint array
-        std::vector<ConstraintData> combinedConstraints(newTotalConstraints);
-
-        // Copy existing constraints
-        for (size_t i = 0; i < m_TotalConstraints && i < existingConstraints.size(); i++) {
-            combinedConstraints[i] = existingConstraints[i];
-        }
-
-        // Add new constraints at offset
-        for (size_t i = 0; i < numConstraints; i++) {
-            combinedConstraints[m_TotalConstraints + i] = constraints[i];
-        }
-
-        // Re-initialize constraint buffer with new size
-        m_ConstraintBuffer.Initialize(newTotalConstraints);
-        m_ConstraintBuffer.UploadData(combinedConstraints);
+        // Upload new constraints at offset
+        m_ConstraintBuffer.UploadSubset(m_TotalConstraints, numConstraints, constraints);
 
         m_TotalParticles = newTotalParticles;
         m_TotalConstraints = newTotalConstraints;
@@ -387,36 +345,32 @@ size_t GPUPhysicsWorld::InitializeCloth(int widthSegments, int heightSegments,
 }
 
 void GPUPhysicsWorld::SetParticlesPinned(size_t startIdx, size_t count, bool pinned) {
-    // Update pinned flags buffer directly
-    std::vector<float> pinnedFlags(startIdx + count, 1.0f);
-    
-    // Download existing flags
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_PinnedFlagsBuffer);
-    float* flagsPtr = static_cast<float*>(glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 
-                                                           0, 
-                                                           pinnedFlags.size() * sizeof(float),
-                                                           GL_MAP_READ_BIT | GL_MAP_WRITE_BIT));
-    if (flagsPtr) {
-        memcpy(pinnedFlags.data(), flagsPtr, pinnedFlags.size() * sizeof(float));
-        glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+    // Use CPU copy directly (no GPU read-back needed)
+    if (m_PinnedFlagsCPU.empty() || m_PinnedFlagsCPU.size() < m_TotalParticles) {
+        std::cerr << "[SetParticlesPinned] ERROR: CPU flags buffer not initialized!" << std::endl;
+        return;
     }
-    
+
     // Update flags for this cloth
     float flagValue = pinned ? 1.0f : 0.0f;
     for (size_t i = startIdx; i < startIdx + count; i++) {
-        pinnedFlags[i] = flagValue;
+        m_PinnedFlagsCPU[i] = flagValue;
     }
-    
-    // Upload updated flags
+
+    // Upload ALL updated flags to GPU buffer
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_PinnedFlagsBuffer);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 
-                    startIdx * sizeof(float),
-                    count * sizeof(float),
-                    pinnedFlags.data() + startIdx);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER,
+                    0,
+                    m_TotalParticles * sizeof(float),
+                    m_PinnedFlagsCPU.data());
     
+    // CRITICAL: Re-bind to binding point 4 for compute shader
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, m_PinnedFlagsBuffer);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
     // Memory barrier to ensure compute shader sees the update
-    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    glMemoryBarrier(GL_ALL_BARRIER_BITS);
+    glFlush();
 }
 
 void GPUPhysicsWorld::Update(float deltaTime) {
@@ -439,7 +393,7 @@ void GPUPhysicsWorld::Update(float deltaTime) {
         std::cerr << "[GPUPhysicsWorld] ERROR: Compute shader ID is 0!" << std::endl;
         return;
     }
-    
+
     // Validate shader program once at startup
     if (!m_ShaderValidated) {
         GLint success;
@@ -472,7 +426,7 @@ void GPUPhysicsWorld::Update(float deltaTime) {
     // Bind SSBOs to binding points 0, 1, and 4
     m_ParticleBuffer.Bind();  // Binding point 0
     m_ConstraintBuffer.Bind();  // Binding point 1
-    
+
     // Bind pinned flags buffer to binding point 4
     if (m_PinnedFlagsBuffer != 0) {
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, m_PinnedFlagsBuffer);
@@ -485,7 +439,7 @@ void GPUPhysicsWorld::Update(float deltaTime) {
     if (m_CollisionParamsBlockIndex != -1) {
         glBindBufferBase(GL_UNIFORM_BUFFER, 3, m_CollisionUniformBuffer);
     }
-    
+
     // CRITICAL: Memory barrier BEFORE dispatch to ensure compute shader sees
     // the latest particle data (especially velocity.w for pinned state)
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_UNIFORM_BARRIER_BIT);

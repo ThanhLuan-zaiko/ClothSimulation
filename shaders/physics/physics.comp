@@ -129,21 +129,21 @@ void main() {
     if (globalIdx < numParticles) {
         ParticleDataType particle = particles[globalIdx];
 
-        // Check pinned flag from dedicated SSBO (more reliable than velocity.w)
+        // Check pinned flag from dedicated SSBO
         float isPinned = pinnedFlags[globalIdx];
-        
+
         // Only process non-pinned particles
         if (isPinned < 0.5f) {
-            vec3 pos = sharedPositions[localIdx];  // Read from shared memory
+            vec3 pos = sharedPositions[localIdx];
             vec3 prevPos = particle.prevPosition.xyz;
             float mass = particle.position.w;
-            
+
             vec3 velocity = (pos - prevPos) * damping;
             vec3 newPos = pos + velocity + gravity * deltaTime * deltaTime;
-            
+
             // Write to shared memory (faster)
             sharedPositions[localIdx] = newPos;
-            
+
             // Update SSBO
             particles[globalIdx].prevPosition = vec4(pos, 0.0f);
             particles[globalIdx].position = vec4(newPos, mass);
@@ -154,87 +154,11 @@ void main() {
     barrier();
     
     // === STAGE 2: Constraint Solving ===
-    // Each thread processes ONE constraint
-    // Read from shared memory if particles in same work group
-    // Otherwise read from SSBO
-    for (int i = 0; i < MAX_ITERATIONS; i++) {
-        if (globalIdx < numConstraints) {
-            ConstraintDataType constraint = constraints[globalIdx];
-            int p1Idx = constraint.indices.x;
-            int p2Idx = constraint.indices.y;
-            
-            // Bounds check
-            if (p1Idx >= 0 && p2Idx >= 0 && p1Idx < numParticles && p2Idx < numParticles) {
-                ParticleDataType p1 = particles[p1Idx];
-                ParticleDataType p2 = particles[p2Idx];
-                
-                // Skip if both pinned
-                if (p1.velocity.w < 0.5f || p2.velocity.w < 0.5f) {
-                    // Try to use shared memory if particles are in this work group
-                    uint workGroupStart = (globalIdx / 128u) * 128u;
-                    
-                    vec3 p1Pos, p2Pos;
-                    
-                    if (p1Idx >= workGroupStart && p1Idx < workGroupStart + 128u) {
-                        p1Pos = sharedPositions[p1Idx - workGroupStart];
-                    } else {
-                        p1Pos = p1.position.xyz;
-                    }
-                    
-                    if (p2Idx >= workGroupStart && p2Idx < workGroupStart + 128u) {
-                        p2Pos = sharedPositions[p2Idx - workGroupStart];
-                    } else {
-                        p2Pos = p2.position.xyz;
-                    }
-                    
-                    vec3 delta = p2Pos - p1Pos;
-                    float currentLength = length(delta);
-                    
-                    if (currentLength >= EPSILON) {
-                        float restLen = constraint.params.x;
-                        float stiffness = constraint.params.y;
-                        
-                        float diff = (currentLength - restLen) / currentLength;
-                        vec3 correction = delta * diff * stiffness;
-                        
-                        vec3 newP1Pos = p1Pos;
-                        vec3 newP2Pos = p2Pos;
-                        
-                        if (p1.velocity.w < 0.5f && p2.velocity.w < 0.5f) {
-                            newP1Pos -= correction * 0.5f;
-                            newP2Pos += correction * 0.5f;
-                        } else if (p1.velocity.w < 0.5f) {
-                            newP1Pos -= correction;
-                        } else {
-                            newP2Pos += correction;
-                        }
-                        
-                        // Write to shared memory if in this work group
-                        if (p1Idx >= workGroupStart && p1Idx < workGroupStart + 128u) {
-                            sharedPositions[p1Idx - workGroupStart] = newP1Pos;
-                            particles[p1Idx].position.xyz = newP1Pos;
-                        } else {
-                            particles[p1Idx].position.xyz = newP1Pos;
-                        }
-                        
-                        if (p2Idx >= workGroupStart && p2Idx < workGroupStart + 128u) {
-                            sharedPositions[p2Idx - workGroupStart] = newP2Pos;
-                            particles[p2Idx].position.xyz = newP2Pos;
-                        } else {
-                            particles[p2Idx].position.xyz = newP2Pos;
-                        }
-                    }
-                }
-            }
-        }
-        
-        // CRITICAL: All threads must reach this barrier
-        barrier();
-    }
+    // Currently disabled due to race condition issues
+    // When re-enabling, need proper synchronization (double-buffering or atomics)
+    barrier();
     
     // === STAGE 3: Sync shared memory ===
-    // Re-load positions from SSBO after constraint solving
-    // (Some may have been updated by other work groups)
     if (globalIdx < numParticles) {
         sharedPositions[localIdx] = particles[globalIdx].position.xyz;
     }
@@ -242,50 +166,51 @@ void main() {
     
     // === STAGE 4: Collision Detection ===
     if (globalIdx < numParticles) {
-        ParticleDataType particle = particles[globalIdx];
-        
-        if (particle.velocity.w < 0.5f) {
+        float isPinned = pinnedFlags[globalIdx];
+
+        if (isPinned < 0.5f) {
+            ParticleDataType particle = particles[globalIdx];
             vec3 pos = sharedPositions[localIdx];
             vec3 prevPos = particle.prevPosition.xyz;
             float mass = particle.position.w;
-            
+
             bool collided = false;
             vec3 newPos = pos;
-            
+
             // Ground collision
             if (newPos.y < groundLevel) {
                 newPos.y = groundLevel;
                 collided = true;
             }
-            
+
             // Sphere collision
             if (sphereRadius > 0.0f) {
                 vec3 toSphere = newPos - sphereCenter;
                 float dist = length(toSphere);
                 float minDist = sphereRadius + collisionMargin;
-                
+
                 if (dist < minDist) {
                     vec3 normal = toSphere / dist;
                     newPos = sphereCenter + normal * minDist;
                     collided = true;
                 }
             }
-            
+
             // Terrain collision
             if (isInTerrainBounds(newPos.x, newPos.z)) {
                 float terrainHeight = getTerrainHeight(newPos.x, newPos.z);
                 float targetHeight = terrainHeight + collisionMargin;
-                
+
                 if (newPos.y < targetHeight) {
                     newPos.y = targetHeight;
                     collided = true;
                 }
             }
-            
+
             if (collided) {
                 sharedPositions[localIdx] = newPos;
                 particles[globalIdx].position = vec4(newPos, mass);
-                
+
                 vec3 velocity = pos - prevPos;
                 velocity *= dampingFactor;
                 particles[globalIdx].prevPosition = vec4(newPos - velocity, 0.0f);

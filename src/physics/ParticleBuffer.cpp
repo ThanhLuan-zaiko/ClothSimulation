@@ -38,6 +38,31 @@ ParticleBuffer::~ParticleBuffer() {
     }
 }
 
+void ParticleBuffer::Resize(size_t numParticles) {
+    m_NumParticles = numParticles;
+    
+    if (m_Buffer == 0) {
+        // Buffer doesn't exist yet, create it
+        glGenBuffers(1, &m_Buffer);
+    }
+    
+    // Calculate buffer size
+    GLsizeiptr bufferSize = sizeof(ParticleData) * numParticles;
+    
+    // Unmap persistent mapping if active
+    if (m_IsPersistentMapped && m_MappedPtr) {
+        glUnmapNamedBuffer(m_Buffer);
+        m_MappedPtr = nullptr;
+        m_IsPersistentMapped = false;
+    }
+    
+    // Resize buffer WITHOUT deleting (preserves buffer ID for VAO)
+    // Note: This discards old data - caller must re-upload
+    glNamedBufferData(m_Buffer, bufferSize, nullptr, GL_DYNAMIC_COPY);
+    
+    m_Initialized = true;
+}
+
 void ParticleBuffer::Initialize(size_t numParticles) {
     m_NumParticles = numParticles;
     m_IsDoubleBuffered = false;  // Single buffer mode

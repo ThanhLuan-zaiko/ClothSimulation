@@ -168,6 +168,9 @@ private:
     size_t m_TotalParticles;
     size_t m_TotalConstraints;
     bool m_Initialized;
+
+    // CPU-side copy of pinned flags (to avoid GPU read-back issues)
+    std::vector<float> m_PinnedFlagsCPU;
 };
 
 } // namespace cloth

@@ -44,6 +44,9 @@ public:
 
     // Initialize buffer with particle count
     void Initialize(size_t numParticles);
+
+    // Resize buffer without deleting (preserves buffer ID for VAO binding)
+    void Resize(size_t numParticles);
     
     // Initialize double-buffered system (2 buffers for ping-pong)
     void InitializeDoubleBuffered(size_t numParticles);

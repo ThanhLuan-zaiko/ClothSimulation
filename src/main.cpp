@@ -191,21 +191,20 @@ int main() {
     size_t cloth1Offset = state.physicsWorld.InitializeCloth(
         clothConfig1.widthSegments, clothConfig1.heightSegments,
         clothConfig1.startX, clothConfig1.startY, clothConfig1.startZ,
-        clothConfig1.segmentLength, true  // Start pinned
-    );
+        clothConfig1.segmentLength, true);  // Start pinned
 
     // Create ClothMesh for rendering (will read from GPU buffer)
     Cloth* dummyCloth1 = new Cloth(state.physicsWorld, clothConfig1);
     ClothMesh* clothMesh1 = new ClothMesh(*dummyCloth1);
     clothMesh1->SetGPUBased(true);
-    clothMesh1->SetParticleBuffer(&state.physicsWorld.GetParticleBuffer(), cloth1Offset);  // Use offset from InitializeCloth
+    clothMesh1->SetParticleBuffer(&state.physicsWorld.GetParticleBuffer(), cloth1Offset);  // offset=0 now
     state.cloths.push_back(dummyCloth1);
     state.clothMeshes.push_back(clothMesh1);
     state.clothDropTimers.push_back(0.0f);
     state.clothDropped.push_back(false);
     size_t cloth1Count = (clothConfig1.widthSegments + 1) * (clothConfig1.heightSegments + 1);
     state.clothParticleCounts.push_back(cloth1Count);
-    state.clothParticleOffsets.push_back(cloth1Offset);  // Track offset
+    state.clothParticleOffsets.push_back(cloth1Offset);  // Track offset (now 0)
     
     // Cloth 2 - Second to drop (starts at y=25, centered over sphere)
     ClothConfig clothConfig2;
@@ -260,7 +259,12 @@ int main() {
     size_t cloth3Count = (clothConfig3.widthSegments + 1) * (clothConfig3.heightSegments + 1);
     state.clothParticleCounts.push_back(cloth3Count);
     state.clothParticleOffsets.push_back(cloth3Offset);  // Track offset
-    
+
+    // Update GPU VAOs for all cloths (buffer may have been resized)
+    for (auto* mesh : state.clothMeshes) {
+        mesh->UpdateGPUVAO();
+    }
+
     // DO NOT re-set particle buffer references - already set correctly above!
 
     // Set update callback
