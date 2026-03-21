@@ -157,7 +157,7 @@ void LoadClothTextures(AppState& state) {
         stbi_set_flip_vertically_on_load(1);
         int width, height, channels;
         unsigned char* data = stbi_load(clothTexturePaths[i].c_str(), &width, &height, &channels, 0);
-        
+
         unsigned int textureID;
         glGenTextures(1, &textureID);
         glBindTexture(GL_TEXTURE_2D, textureID);
@@ -172,6 +172,8 @@ void LoadClothTextures(AppState& state) {
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 8);
             stbi_image_free(data);
+            std::cout << "[ClothTexture " << i << "] Loaded: " << clothTexturePaths[i] 
+                      << " (" << width << "x" << height << ", " << channels << " channels)" << std::endl;
         } else {
             std::cerr << "[ClothTextures] Failed to load: " << clothTexturePaths[i] << std::endl;
             // Create a default 1x1 white texture as fallback

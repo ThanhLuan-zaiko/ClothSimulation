@@ -251,29 +251,41 @@ void Render(AppState& state, const Application& app) {
     state.sphereShader.Unbind();
 
     // --- Draw cloths ---
-    // TEMP: Disabled - causes black flash issue
-    /*
-    state.clothShader.Bind();
-    state.clothShader.SetMat4("u_Model", model);
-    state.clothShader.SetMat4("u_View", view);
-    state.clothShader.SetMat4("u_Projection", projection);
-    state.clothShader.SetVec3("u_LightPos", glm::vec3(5.0f, 10.0f, 5.0f));
-    state.clothShader.SetVec3("u_ViewPos", state.camera.GetPosition());
-    state.clothShader.SetBool("u_UseTexture", true);
-    state.clothShader.SetInt("u_Wireframe", 0);
-    state.clothShader.SetVec3("u_Color", glm::vec3(1.0f, 1.0f, 1.0f));
+    if (state.clothTexturesLoaded && !state.clothMeshes.empty()) {
+        state.clothShader.Bind();
+        state.clothShader.SetMat4("u_Model", model);
+        state.clothShader.SetMat4("u_View", view);
+        state.clothShader.SetMat4("u_Projection", projection);
+        state.clothShader.SetVec3("u_LightPos", glm::vec3(5.0f, 10.0f, 5.0f));
+        state.clothShader.SetVec3("u_ViewPos", state.camera.GetPosition());
+        state.clothShader.SetBool("u_UseTexture", true);
+        state.clothShader.SetInt("u_Wireframe", 0);
+        state.clothShader.SetVec3("u_Color", glm::vec3(1.0f, 1.0f, 1.0f));
 
-    glDisable(GL_CULL_FACE);
+        // Ensure correct render states BEFORE rendering cloths
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LESS);
+        glDisable(GL_CULL_FACE);
 
-    // Render all 3 cloths - each cloth binds its own particle buffer
-    for (size_t i = 0; i < state.clothMeshes.size(); i++) {
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, state.clothTextures[i]);
-        state.clothShader.SetInt("u_ClothTexture", 0);
-        state.clothMeshes[i]->Draw(state.clothShader);
+        // Render each cloth separately with explicit state setup
+        for (size_t i = 0; i < state.clothMeshes.size(); i++) {
+            if (i < state.clothTextures.size() && glIsTexture(state.clothTextures[i])) {
+                // Explicitly bind texture
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D, state.clothTextures[i]);
+                state.clothShader.SetInt("u_ClothTexture", 0);
+                
+                // Draw cloth
+                state.clothMeshes[i]->Draw(state.clothShader);
+                
+                // Unbind texture after drawing
+                glBindTexture(GL_TEXTURE_2D, 0);
+            }
+        }
+        
+        glEnable(GL_CULL_FACE);
+        state.clothShader.Unbind();
     }
-    glEnable(GL_CULL_FACE);
-    */
 
     // Unbind physics world
     state.physicsWorld.Unbind();

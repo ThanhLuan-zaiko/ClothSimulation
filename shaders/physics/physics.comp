@@ -36,6 +36,11 @@ layout(std430, binding = 1) buffer ConstraintBufferSSBO {
     ConstraintDataType constraints[];
 };
 
+// Pinned flags: 1.0 = pinned, 0.0 = free
+layout(std430, binding = 4) buffer PinnedFlagsSSBO {
+    float pinnedFlags[];
+};
+
 // ============================================================================
 // UNIFORMS
 // ============================================================================
@@ -123,9 +128,12 @@ void main() {
     // === STAGE 1: Verlet Integration ===
     if (globalIdx < numParticles) {
         ParticleDataType particle = particles[globalIdx];
+
+        // Check pinned flag from dedicated SSBO (more reliable than velocity.w)
+        float isPinned = pinnedFlags[globalIdx];
         
         // Only process non-pinned particles
-        if (particle.velocity.w < 0.5f) {
+        if (isPinned < 0.5f) {
             vec3 pos = sharedPositions[localIdx];  // Read from shared memory
             vec3 prevPos = particle.prevPosition.xyz;
             float mass = particle.position.w;

@@ -98,6 +98,12 @@ public:
 
     // Check if initialized
     bool IsInitialized() const { return m_Initialized; }
+    
+    // Get particle buffer ID (for VAO setup)
+    unsigned int GetParticleBufferID() const { return m_ParticleBuffer.GetBufferID(); }
+    
+    // Get pinned flags buffer ID
+    unsigned int GetPinnedFlagsBufferID() const { return m_PinnedFlagsBuffer; }
 
     // Download particle data (for debugging)
     std::vector<ParticleData> DownloadParticles() const;
@@ -127,6 +133,7 @@ private:
     // Buffers
     ParticleBuffer m_ParticleBuffer;
     ConstraintBuffer m_ConstraintBuffer;
+    unsigned int m_PinnedFlagsBuffer;  // Dedicated buffer for pinned flags
 
     // Uniform buffer object
     unsigned int m_UniformBuffer;

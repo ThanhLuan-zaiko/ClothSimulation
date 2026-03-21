@@ -123,6 +123,12 @@ int main() {
         GetAssetPath("shaders/skybox/skybox.frag")
     );
 
+    // Load cloth shader from file
+    state.clothShader = Shader::CreateFromFile(
+        GetAssetPath("shaders/cloth/cloth.vert"),
+        GetAssetPath("shaders/cloth/cloth.frag")
+    );
+
     // Initialize world (scan textures, create skybox)
     state.world.Initialize(GetAssetPath("assets/textures/lands/"));
 
@@ -173,13 +179,13 @@ int main() {
     // Each cloth starts high above and falls down with a delay
     // For GPU physics, we initialize cloth data directly on GPU
 
-    // Cloth 1 - First to drop (starts at y=35, slightly offset from center)
+    // Cloth 1 - First to drop (starts at y=20, slightly offset from center)
     ClothConfig clothConfig1;
     clothConfig1.widthSegments = state.gpuInfo.clothResolution[0];
     clothConfig1.heightSegments = state.gpuInfo.clothResolution[0];
     clothConfig1.segmentLength = 0.12f;
     clothConfig1.startX = -0.5f;   // Slightly left of center
-    clothConfig1.startY = 35.0f;   // High above sphere
+    clothConfig1.startY = 20.0f;   // High above sphere
     clothConfig1.startZ = 0.5f;    // Slightly forward
 
     size_t cloth1Offset = state.physicsWorld.InitializeCloth(
@@ -200,14 +206,14 @@ int main() {
     size_t cloth1Count = (clothConfig1.widthSegments + 1) * (clothConfig1.heightSegments + 1);
     state.clothParticleCounts.push_back(cloth1Count);
     state.clothParticleOffsets.push_back(cloth1Offset);  // Track offset
-
-    // Cloth 2 - Second to drop (starts at y=40, centered over sphere)
+    
+    // Cloth 2 - Second to drop (starts at y=25, centered over sphere)
     ClothConfig clothConfig2;
     clothConfig2.widthSegments = state.gpuInfo.clothResolution[1];
     clothConfig2.heightSegments = state.gpuInfo.clothResolution[1];
     clothConfig2.segmentLength = 0.12f;
     clothConfig2.startX = 0.0f;    // Centered over sphere
-    clothConfig2.startY = 40.0f;   // Higher than cloth 1
+    clothConfig2.startY = 25.0f;   // Higher than cloth 1
     clothConfig2.startZ = -1.5f;   // Slightly behind sphere
 
     size_t cloth2Offset = state.physicsWorld.InitializeCloth(
@@ -227,14 +233,14 @@ int main() {
     size_t cloth2Count = (clothConfig2.widthSegments + 1) * (clothConfig2.heightSegments + 1);
     state.clothParticleCounts.push_back(cloth2Count);
     state.clothParticleOffsets.push_back(cloth2Offset);  // Track offset
-
-    // Cloth 3 - Third to drop (starts at y=45, opposite diagonal)
+    
+    // Cloth 3 - Third to drop (starts at y=30, opposite diagonal)
     ClothConfig clothConfig3;
     clothConfig3.widthSegments = state.gpuInfo.clothResolution[2];
     clothConfig3.heightSegments = state.gpuInfo.clothResolution[2];
     clothConfig3.segmentLength = 0.12f;
     clothConfig3.startX = 0.8f;    // Right side, closer to center (adjusted from 1.8f)
-    clothConfig3.startY = 45.0f;   // Highest
+    clothConfig3.startY = 30.0f;   // Highest
     clothConfig3.startZ = 1.0f;    // Slightly forward (adjusted from 0.0f)
 
     size_t cloth3Offset = state.physicsWorld.InitializeCloth(
@@ -254,7 +260,7 @@ int main() {
     size_t cloth3Count = (clothConfig3.widthSegments + 1) * (clothConfig3.heightSegments + 1);
     state.clothParticleCounts.push_back(cloth3Count);
     state.clothParticleOffsets.push_back(cloth3Offset);  // Track offset
-
+    
     // DO NOT re-set particle buffer references - already set correctly above!
 
     // Set update callback

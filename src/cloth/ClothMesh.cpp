@@ -8,12 +8,16 @@
 namespace cloth {
 
 ClothMesh::ClothMesh(Cloth& cloth)
-    : m_Cloth(cloth), m_IsDirty(true), m_VAO(0), m_VBO(0), m_EBO(0),
+    : m_Cloth(cloth), m_IsDirty(true), m_VAO(0), m_VBO(0), m_EBO(0), m_GPUVAO(0), m_GPUVAOInitialized(0),
       m_GPUBased(false), m_ParticleBuffer(nullptr), m_ParticleOffset(0) {
 
     glGenVertexArrays(1, &m_VAO);
     glGenBuffers(1, &m_VBO);
     glGenBuffers(1, &m_EBO);
+    
+    // Don't create GPU VAO yet - it will be created in SetParticleBuffer()
+    m_GPUVAO = 0;
+    m_GPUVAOInitialized = 0;
 
     BuildMesh();
     UpdateBuffer();  // Update VBO with texcoords for GPU rendering
@@ -21,6 +25,7 @@ ClothMesh::ClothMesh(Cloth& cloth)
 
 ClothMesh::~ClothMesh() {
     glDeleteVertexArrays(1, &m_VAO);
+    glDeleteVertexArrays(1, &m_GPUVAO);
     glDeleteBuffers(1, &m_VBO);
     glDeleteBuffers(1, &m_EBO);
 }
@@ -29,6 +34,16 @@ void ClothMesh::SetParticleBuffer(const ParticleBuffer* buffer, size_t offset) {
     m_ParticleBuffer = buffer;
     m_ParticleOffset = offset;
     m_GPUBased = true;
+    
+    // Bind particle buffer FIRST before creating VAO
+    // This ensures VAO captures the correct buffer from the start
+    glBindBuffer(GL_ARRAY_BUFFER, m_ParticleBuffer->GetBufferID());
+    
+    // Create GPU VAO
+    glGenVertexArrays(1, &m_GPUVAO);
+    m_GPUVAOInitialized = 1;
+    
+    SetupGPUVAO();
 }
 
 void ClothMesh::BuildMesh() {
@@ -108,22 +123,21 @@ void ClothMesh::UpdateBuffer() {
 
     glBindVertexArray(m_VAO);
 
-    // Always update VBO with vertex data (for texcoords and normals)
+    // Update VBO with vertex data (for texcoords and normals)
     glBindBuffer(GL_ARRAY_BUFFER, m_VBO);
     glBufferData(GL_ARRAY_BUFFER, m_Vertices.size() * sizeof(Vertex), m_Vertices.data(), GL_STATIC_DRAW);
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_EBO);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, m_Indices.size() * sizeof(unsigned int), m_Indices.data(), GL_STATIC_DRAW);
 
-    // Position attribute (will be overridden by GPU buffer if using GPU rendering)
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)0);
+    // DO NOT setup attribute 0 (position) here - it will be setup from particle buffer in BindForGPURendering
+    // This avoids VAO caching the VBO for position when we actually want GPU particle data
 
-    // Normal attribute
+    // Normal attribute (location 1)
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, normal));
 
-    // TexCoord attribute
+    // TexCoord attribute (location 2)
     glEnableVertexAttribArray(2);
     glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, texCoord));
 
@@ -131,32 +145,47 @@ void ClothMesh::UpdateBuffer() {
     m_IsDirty = false;
 }
 
-void ClothMesh::BindForGPURendering() const {
-    if (!m_GPUBased || !m_ParticleBuffer) return;
-
-    glBindVertexArray(m_VAO);
-
-    // Bind particle SSBO for position data (location 0)
-    glBindBuffer(GL_ARRAY_BUFFER, m_ParticleBuffer->GetBufferID());
-
-    // Position attribute (location 0) - from GPU particle buffer WITH OFFSET
+void ClothMesh::SetupGPUVAO() {
+    if (!m_ParticleBuffer) return;
+    
+    glBindVertexArray(m_GPUVAO);
+    
+    // Bind EBO for index data
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_EBO);
+    
+    // Setup position attribute from particle buffer (location 0)
+    // Buffer should already be bound from SetParticleBuffer()
+    uintptr_t byteOffset = m_ParticleOffset * sizeof(ParticleData);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(ParticleData),
-                          (void*)(m_ParticleOffset * sizeof(ParticleData)));
-
-    // Normals: Use constant up vector (no GPU normals)
-    // Keep attribute enabled but use constant vertex attribute
+                          reinterpret_cast<void*>(byteOffset));
+    
+    // Setup normal as constant (location 1)
     glEnableVertexAttribArray(1);
     glVertexAttrib3f(1, 0.0f, 1.0f, 0.0f);
-
-    // TexCoord attribute (location 2) - from CPU VBO (static, never changes)
+    
+    // Setup texcoord attribute from VBO (location 2)
     glBindBuffer(GL_ARRAY_BUFFER, m_VBO);
     glEnableVertexAttribArray(2);
-    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, texCoord));
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), 
+                          reinterpret_cast<void*>(offsetof(Vertex, texCoord)));
+    
+    // Unbind to avoid state leak
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    
+    glBindVertexArray(0);
+}
 
-    // IMPORTANT: Re-bind particle buffer for position AND EBO
+void ClothMesh::BindForGPURendering() const {
+    if (!m_GPUBased || !m_ParticleBuffer) return;
+    
+    glBindVertexArray(m_GPUVAO);
+    
+    // Update position attribute with correct offset
     glBindBuffer(GL_ARRAY_BUFFER, m_ParticleBuffer->GetBufferID());
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_EBO);
+    uintptr_t byteOffset = m_ParticleOffset * sizeof(ParticleData);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(ParticleData),
+                          reinterpret_cast<void*>(byteOffset));
 }
 
 void ClothMesh::Unbind() const {
@@ -167,9 +196,8 @@ void ClothMesh::Unbind() const {
 
 void ClothMesh::Draw(const Shader& shader) {
     if (m_GPUBased && m_ParticleBuffer) {
-        BindForGPURendering();
+        glBindVertexArray(m_GPUVAO);
         glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(m_Indices.size()), GL_UNSIGNED_INT, 0);
-        Unbind();
     } else {
         Update();
         glBindVertexArray(m_VAO);

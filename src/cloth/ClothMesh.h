@@ -38,10 +38,16 @@ private:
     std::vector<Vertex> m_Vertices;
     std::vector<unsigned int> m_Indices;
 
+    // CPU rendering VAO (uses VBO for positions)
     unsigned int m_VAO;
     unsigned int m_VBO;
     unsigned int m_EBO;
     bool m_IsDirty;
+    
+    // GPU rendering VAO (uses particle SSBO for positions)
+    unsigned int m_GPUVAO;
+    unsigned int m_GPUVAOInitialized;  // Track if GPU VAO was setup
+    
     bool m_GPUBased;  // If true, reads from GPU buffer
 
     // GPU buffer reference
@@ -50,6 +56,7 @@ private:
 
     void BuildMesh();
     void UpdateBuffer();
+    void SetupGPUVAO();  // Setup GPU VAO with current particle buffer
     glm::vec3 CalculateNormal(const glm::vec3& p1, const glm::vec3& p2, const glm::vec3& p3);
 };
 

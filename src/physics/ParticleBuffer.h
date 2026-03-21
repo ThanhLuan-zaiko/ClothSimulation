@@ -70,7 +70,10 @@ public:
     size_t GetNumParticles() const { return m_NumParticles; }
 
     // Get buffer ID
-    unsigned int GetBufferID() const { return m_Buffer; }
+    // For double-buffered mode, returns the current READ buffer (what GPU rendered from last frame)
+    unsigned int GetBufferID() const { 
+        return m_IsDoubleBuffered ? GetBufferID(m_ReadBufferIndex) : m_Buffer; 
+    }
     
     // Get buffer ID at index (for double buffering)
     unsigned int GetBufferID(unsigned int index) const;

@@ -19,6 +19,6 @@ void main() {
     v_Normal = mat3(transpose(inverse(u_Model))) * a_Normal;
     v_TexCoord = a_TexCoord;
     v_IsWireframe = float(u_Wireframe);
-    
+
     gl_Position = u_Projection * u_View * u_Model * vec4(a_Position, 1.0);
 }
