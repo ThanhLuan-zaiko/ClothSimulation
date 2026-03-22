@@ -9,6 +9,7 @@
 #include <fstream>
 #include <sstream>
 #include <cstdint>
+#include <algorithm>
 
 namespace cloth {
 
@@ -158,11 +159,11 @@ bool GPUPhysicsWorld::Initialize(const GPUPhysicsConfig& config) {
     glBufferData(GL_SHADER_STORAGE_BUFFER, MAX_PARTICLES * sizeof(unsigned int), nullptr, GL_DYNAMIC_COPY);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
     
-    // Color collision counters (one per color)
+    // Color collision counters (one per color) - now supports 16 colors
     glGenBuffers(1, &m_ColorCollisionCountBuffer);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_ColorCollisionCountBuffer);
-    unsigned int colorCounts[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-    glBufferData(GL_SHADER_STORAGE_BUFFER, 8 * sizeof(unsigned int), colorCounts, GL_DYNAMIC_COPY);
+    unsigned int colorCounts[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    glBufferData(GL_SHADER_STORAGE_BUFFER, 16 * sizeof(unsigned int), colorCounts, GL_DYNAMIC_COPY);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
     // Constraint adjacency list buffer (will be built after cloth initialization)
@@ -377,17 +378,19 @@ size_t GPUPhysicsWorld::InitializeCloth(int widthSegments, int heightSegments,
                      pinnedFlags.data(), GL_DYNAMIC_DRAW);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
-        // Initialize particle colors for graph coloring (simple 4-color grid pattern)
+        // Initialize particle colors for graph coloring
+        // Use 9-color pattern for full grid safety (handles bend constraints)
+        // Pattern: (x%3) + (y%3)*3 gives values 0-8
         std::vector<unsigned int> particleColors(MAX_PARTICLES, 0);
         for (int y = 0; y <= heightSegments; y++) {
             for (int x = 0; x <= widthSegments; x++) {
                 int idx = y * (widthSegments + 1) + x;
-                // 4-color pattern: (x%2) + (y%2)*2 gives values 0,1,2,3
-                particleColors[idx] = ((x % 2) + (y % 2) * 2);
+                particleColors[idx] = ((x % 3) + (y % 3) * 3);
             }
         }
+        
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_ParticleColorsBuffer);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, particleColors.size() * sizeof(unsigned int), 
+        glBufferData(GL_SHADER_STORAGE_BUFFER, particleColors.size() * sizeof(unsigned int),
                      particleColors.data(), GL_DYNAMIC_COPY);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
@@ -428,13 +431,12 @@ size_t GPUPhysicsWorld::InitializeCloth(int widthSegments, int heightSegments,
         // Upload new constraints at offset
         m_ConstraintBuffer.UploadSubset(m_TotalConstraints, numConstraints, offsetConstraints);
 
-        // Initialize particle colors for NEW cloth at offset
+        // Initialize particle colors for NEW cloth at offset (9-color pattern)
         std::vector<unsigned int> newClothColors(numParticles);
         for (int y = 0; y <= heightSegments; y++) {
             for (int x = 0; x <= widthSegments; x++) {
                 int idx = y * (widthSegments + 1) + x;
-                // 4-color pattern with offset for this cloth
-                newClothColors[idx] = ((x % 2) + (y % 2) * 2);
+                newClothColors[idx] = ((x % 3) + (y % 3) * 3);
             }
         }
         // Upload colors at correct offset
@@ -550,23 +552,15 @@ void GPUPhysicsWorld::Update(float deltaTime) {
     if (m_CollisionDataBuffer != 0) {
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, m_CollisionDataBuffer);
     }
-    
-    // Bind graph coloring buffers
-    if (m_ParticleColorsBuffer != 0) {
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, m_ParticleColorsBuffer);
-    }
-    if (m_ColorCollisionCountBuffer != 0) {
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 8, m_ColorCollisionCountBuffer);
-    }
 
-    // Bind constraint adjacency list buffer to binding point 9
+    // Bind constraint adjacency list buffer (binding point 7)
     if (m_ConstraintAdjacencyBuffer != 0) {
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, m_ConstraintAdjacencyBuffer);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, m_ConstraintAdjacencyBuffer);
     }
 
-    // Bind constraint indices buffer to binding point 10
+    // Bind constraint indices buffer (binding point 8)
     if (m_ConstraintIndicesBuffer != 0) {
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 10, m_ConstraintIndicesBuffer);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 8, m_ConstraintIndicesBuffer);
     }
 
     // Bind uniform buffers to binding points 2 and 3
@@ -709,71 +703,95 @@ void GPUPhysicsWorld::SetCollisionSphere(const glm::vec3& center, float radius) 
 void GPUPhysicsWorld::BuildConstraintAdjacencyList() {
     // Download ONLY initialized constraints from GPU (not entire MAX_CONSTRAINTS buffer)
     std::vector<ConstraintData> allConstraints = m_ConstraintBuffer.DownloadData();
-    
+
     // Only process constraints up to m_TotalConstraints (ignore uninitialized data)
     std::vector<ConstraintData> constraints;
     constraints.reserve(m_TotalConstraints);
     for (size_t i = 0; i < std::min(allConstraints.size(), m_TotalConstraints); i++) {
         constraints.push_back(allConstraints[i]);
     }
-    
-    std::cout << "[GPU] Building adjacency list: " << m_TotalParticles << " particles, " 
+
+    std::cout << "[GPU] Building adjacency list: " << m_TotalParticles << " particles, "
               << m_TotalConstraints << " constraints (from " << allConstraints.size() << " buffer)" << std::endl;
-    
+
+    // CRITICAL: Check for constraint buffer overflow
+    if (m_TotalConstraints > MAX_CONSTRAINTS) {
+        std::cerr << "[GPU] ERROR: Total constraints (" << m_TotalConstraints 
+                  << ") exceeds MAX_CONSTRAINTS (" << MAX_CONSTRAINTS << ")!" << std::endl;
+        std::cerr << "[GPU] This will cause buffer overflow and simulation instability!" << std::endl;
+    }
+
     std::vector<std::vector<int>> particleConstraints(m_TotalParticles);
-    
-    // First pass: count constraints per particle
+
+    // First pass: count constraints per particle with validation
+    int invalidConstraints = 0;
     for (size_t c = 0; c < constraints.size(); c++) {
         const auto& constraint = constraints[c];
         int p1 = constraint.indices.x;
         int p2 = constraint.indices.y;
-        
-        if (p1 >= 0 && p1 < (int)m_TotalParticles) {
-            particleConstraints[p1].push_back(static_cast<int>(c));
+
+        // Validate particle indices (catch corrupted data from buffer overflow)
+        if (p1 < 0 || p1 >= (int)m_TotalParticles || p2 < 0 || p2 >= (int)m_TotalParticles) {
+            invalidConstraints++;
+            if (invalidConstraints <= 5) {
+                std::cerr << "[GPU] WARNING: Invalid constraint " << c << " indices: p1=" << p1 
+                          << ", p2=" << p2 << " (total particles=" << m_TotalParticles << ")" << std::endl;
+            }
+            continue;
         }
-        if (p2 >= 0 && p2 < (int)m_TotalParticles) {
-            particleConstraints[p2].push_back(static_cast<int>(c));
-        }
+
+        particleConstraints[p1].push_back(static_cast<int>(c));
+        particleConstraints[p2].push_back(static_cast<int>(c));
     }
-    
+
+    if (invalidConstraints > 0) {
+        std::cerr << "[GPU] WARNING: " << invalidConstraints << " invalid constraints found (buffer overflow?)" << std::endl;
+    }
+
     // Build flat constraint index array and adjacency entries
     std::vector<int> constraintIndices;
     std::vector<glm::ivec2> adjacency(m_TotalParticles);  // (offset, count)
-    
+
     int maxConstraintsPerParticle = 0;
     int totalConstraintRefs = 0;
-    
+
     for (size_t p = 0; p < m_TotalParticles; p++) {
         adjacency[p].x = static_cast<int>(constraintIndices.size());  // offset
         adjacency[p].y = static_cast<int>(particleConstraints[p].size());  // count
-        
+
+        // Sanity check: a particle should have at most ~12 constraints in a grid
+        if (adjacency[p].y > 16) {
+            std::cerr << "[GPU] WARNING: Particle " << p << " has " << adjacency[p].y 
+                      << " constraints (expected max ~12) - possible corruption!" << std::endl;
+        }
+
         maxConstraintsPerParticle = std::max(maxConstraintsPerParticle, adjacency[p].y);
         totalConstraintRefs += adjacency[p].y;
-        
+
         // Add constraint indices for this particle
         for (int cIdx : particleConstraints[p]) {
             constraintIndices.push_back(cIdx);
         }
     }
-    
+
     std::cout << "[GPU] Adjacency stats: max constraints/particle=" << maxConstraintsPerParticle
               << ", avg=" << (float)totalConstraintRefs / m_TotalParticles
               << ", total refs=" << totalConstraintRefs << std::endl;
-    
+
     // Upload adjacency list to GPU
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_ConstraintAdjacencyBuffer);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, 
-                    m_TotalParticles * sizeof(glm::ivec2), 
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
+                    m_TotalParticles * sizeof(glm::ivec2),
                     adjacency.data());
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-    
+
     // Upload constraint indices to GPU
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_ConstraintIndicesBuffer);
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
                     constraintIndices.size() * sizeof(int),
                     constraintIndices.data());
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-    
+
     std::cout << "[GPU] ✓ Built constraint adjacency list" << std::endl;
 }
 

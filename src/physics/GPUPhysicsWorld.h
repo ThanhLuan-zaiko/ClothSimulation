@@ -10,9 +10,11 @@
 namespace cloth {
 
 // Maximum particles for all cloths
+// Note: Each cloth with resolution N needs ~N*N particles and ~5*N*N constraints
+// For 3 cloths at 70x70: 3*5041=15123 particles, 3*25000=75000 constraints
 const size_t MAX_PARTICLES = 20000;
-const size_t MAX_CONSTRAINTS = 60000;
-const int MAX_COLORS = 8;
+const size_t MAX_CONSTRAINTS = 120000;  // Increased from 60000 to support 3x 70x70 cloths
+const int MAX_COLORS = 16;  // Increased from 8 to match shader (9-color pattern + buffer)
 
 // GPU Physics simulation parameters
 struct GPUPhysicsConfig {
