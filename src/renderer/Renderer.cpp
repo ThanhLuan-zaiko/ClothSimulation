@@ -156,29 +156,57 @@ void LoadClothTextures(AppState& state) {
     for (size_t i = 0; i < clothTexturePaths.size(); i++) {
         stbi_set_flip_vertically_on_load(1);
         int width, height, channels;
-        unsigned char* data = stbi_load(clothTexturePaths[i].c_str(), &width, &height, &channels, 0);
+        
+        // Force 4 channels (RGBA) for all textures - most compatible
+        unsigned char* data = stbi_load(clothTexturePaths[i].c_str(), &width, &height, &channels, 4);
 
         unsigned int textureID;
         glGenTextures(1, &textureID);
         glBindTexture(GL_TEXTURE_2D, textureID);
 
-        if (data) {
-            GLenum format = (channels == 4) ? GL_RGBA : GL_RGB;
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, width, height, 0, format, GL_UNSIGNED_BYTE, data);
-            glGenerateMipmap(GL_TEXTURE_2D);
+        if (data && width > 0 && height > 0) {
+            // Always use RGBA format
+            GLenum internalFormat = GL_RGBA8;
+            GLenum format = GL_RGBA;
+            
+            std::cout << "[ClothTexture " << i << "] Info: " << clothTexturePaths[i]
+                      << " - " << width << "x" << height << ", " 
+                      << channels << " channels (forced to RGBA)" << std::endl;
+            
+            // Upload texture data
+            glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, width, height, 0, format, GL_UNSIGNED_BYTE, data);
+            
+            // Set texture parameters
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 8);
+            
+            // Generate mipmaps
+            glGenerateMipmap(GL_TEXTURE_2D);
+            
+            // Set anisotropic filtering
+            float maxAnisotropy = 1.0f;
+            glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY, &maxAnisotropy);
+            if (maxAnisotropy > 1.0f && maxAnisotropy <= 16.0f) {
+                glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY, maxAnisotropy);
+            }
+            
+            // Memory barrier to ensure texture is visible to shaders
+            glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT);
+            
             stbi_image_free(data);
-            std::cout << "[ClothTexture " << i << "] Loaded: " << clothTexturePaths[i] 
-                      << " (" << width << "x" << height << ", " << channels << " channels)" << std::endl;
+            std::cout << "[ClothTexture " << i << "] Loaded: " << clothTexturePaths[i] << std::endl;
         } else {
-            std::cerr << "[ClothTextures] Failed to load: " << clothTexturePaths[i] << std::endl;
-            // Create a default 1x1 white texture as fallback
-            unsigned char whitePixel[] = {255, 255, 255};
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 1, 1, 0, GL_RGB, GL_UNSIGNED_BYTE, whitePixel);
+            const char* error = stbi_failure_reason();
+            std::cerr << "[ClothTextures] Failed to load: " << clothTexturePaths[i] 
+                      << " - Error: " << (error ? error : "Unknown") << std::endl;
+            if (data) stbi_image_free(data);
+            // Create a default red texture as fallback (visible error indicator)
+            unsigned char errorPixel[] = {255, 0, 0, 255};  // Red
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, errorPixel);
             glGenerateMipmap(GL_TEXTURE_2D);
         }
 

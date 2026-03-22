@@ -267,18 +267,15 @@ void Render(AppState& state, const Application& app) {
         glDepthFunc(GL_LESS);
         glDisable(GL_CULL_FACE);
 
-        // Render each cloth separately with explicit state setup
+        // Render each cloth
         for (size_t i = 0; i < state.clothMeshes.size(); i++) {
             if (i < state.clothTextures.size() && glIsTexture(state.clothTextures[i])) {
-                // Explicitly bind texture
                 glActiveTexture(GL_TEXTURE0);
                 glBindTexture(GL_TEXTURE_2D, state.clothTextures[i]);
                 state.clothShader.SetInt("u_ClothTexture", 0);
-                
-                // Draw cloth
+
                 state.clothMeshes[i]->Draw(state.clothShader);
-                
-                // Unbind texture after drawing
+
                 glBindTexture(GL_TEXTURE_2D, 0);
             }
         }

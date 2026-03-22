@@ -9,6 +9,11 @@
 
 namespace cloth {
 
+// Maximum particles for all cloths
+const size_t MAX_PARTICLES = 20000;
+const size_t MAX_CONSTRAINTS = 60000;
+const int MAX_COLORS = 8;
+
 // GPU Physics simulation parameters
 struct GPUPhysicsConfig {
     glm::vec3 gravity = glm::vec3(0.0f, -9.81f, 0.0f);
@@ -121,6 +126,9 @@ private:
     // Create terrain heightmap texture for GPU access
     void CreateTerrainHeightmapTexture();
 
+    // Build constraint adjacency list for optimized constraint solving
+    void BuildConstraintAdjacencyList();
+
     // Compute shader
     Shader m_ComputeShader;
     bool m_ShaderLoaded;
@@ -134,6 +142,18 @@ private:
     ParticleBuffer m_ParticleBuffer;
     ConstraintBuffer m_ConstraintBuffer;
     unsigned int m_PinnedFlagsBuffer;  // Dedicated buffer for pinned flags
+    
+    // Atomic collision buffers
+    unsigned int m_CollisionCountBuffer;
+    unsigned int m_CollisionDataBuffer;
+    
+    // Graph coloring buffers
+    unsigned int m_ParticleColorsBuffer;
+    unsigned int m_ColorCollisionCountBuffer;
+
+    // Constraint adjacency list buffers (for optimized constraint solving)
+    unsigned int m_ConstraintAdjacencyBuffer;  // (offset, count) for each particle
+    unsigned int m_ConstraintIndicesBuffer;    // Flat array of constraint indices
 
     // Uniform buffer object
     unsigned int m_UniformBuffer;
