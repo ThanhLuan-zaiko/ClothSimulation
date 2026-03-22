@@ -50,13 +50,23 @@ layout(std430, binding = 6) buffer CollisionDataSSBO {
     uint collisionData[];
 };
 
+// Graph coloring: particle colors for constraint solving
+layout(std430, binding = 7) buffer ParticleColorsSSBO {
+    uint particleColors[];  // Color index for each particle
+};
+
+// Per-color collision counters (for graph coloring)
+layout(std430, binding = 8) buffer ColorCollisionCountSSBO {
+    uint colorCollisionCounts[];  // One counter per color
+};
+
 // Constraint adjacency list for optimized constraint solving
-layout(std430, binding = 7) buffer ConstraintAdjacencySSBO {
+layout(std430, binding = 9) buffer ConstraintAdjacencySSBO {
     ivec2 particleConstraints[];  // (offset, count) for each particle
 };
 
 // Flat constraint index array
-layout(std430, binding = 8) buffer ConstraintIndicesSSBO {
+layout(std430, binding = 10) buffer ConstraintIndicesSSBO {
     int constraintIndices[];
 };
 
@@ -93,6 +103,8 @@ uniform sampler2D terrainHeightmap;
 
 const int MAX_ITERATIONS = MAX_ITERATIONS_RUNTIME;
 const float EPSILON = 0.0001f;
+const int MAX_COLORS = 9;  // 9-color pattern for grid (handles bend constraints)
+const int CONSTRAINT_ITERATIONS = 5;  // Increased for smoother constraint solving
 const float SELF_COLLISION_RADIUS = 0.08f;
 const float SELF_COLLISION_REPULSION = 0.35f;
 const uint MAX_COLLISIONS = 4096u;
@@ -104,6 +116,7 @@ const float FRICTION_COEFFICIENT = 0.95f;
 // ============================================================================
 
 shared vec3 sharedPositions[128];  // Match work group size
+shared uint sharedColors[128];     // Particle colors for current work group
 
 // ============================================================================
 // HELPER FUNCTIONS
@@ -156,7 +169,7 @@ void recordCollision(uint particleIdx, uint collidedIdx) {
     }
 }
 
-// Detect self-collision for a particle - minimal to prevent cloth explosion
+// Detect self-collision for a particle - VERY GENTLE to prevent cloth explosion on sphere
 void detectSelfCollision(uint globalIdx, vec3 pos) {
     // Only check nearby particles in the same work group
     uint checksPerformed = 0u;
@@ -178,8 +191,8 @@ void detectSelfCollision(uint globalIdx, vec3 pos) {
             vec3 repulsionDir = (pos - otherPos) / dist;
             float repulsionStrength = (SELF_COLLISION_RADIUS - dist) / SELF_COLLISION_RADIUS;
 
-            // FIX: Stronger repulsion to prevent cloth intersection
-            repulsionStrength = min(repulsionStrength, 1.0f) * SELF_COLLISION_REPULSION;
+            // EXTREMELY GENTLE repulsion - just prevent intersection
+            repulsionStrength = min(repulsionStrength, 1.0f) * SELF_COLLISION_REPULSION * 0.15f;  // 15% strength
             totalRepulsion += repulsionDir * repulsionStrength;
             totalRepulsionWeight += repulsionStrength;
             checksPerformed++;
@@ -189,8 +202,97 @@ void detectSelfCollision(uint globalIdx, vec3 pos) {
     // Apply minimal repulsion
     if (totalRepulsionWeight > EPSILON) {
         vec3 repulsion = totalRepulsion / (totalRepulsionWeight + 0.001f);
-        // FIX: Increased adjustment from 0.1f to 0.25f for stronger self-collision response
-        particles[globalIdx].position.xyz += repulsion * 0.25f;
+        // TINY adjustment - just enough to prevent intersection
+        particles[globalIdx].position.xyz += repulsion * 0.02f;  // 2% adjustment
+    }
+}
+
+// ============================================================================
+// GRAPH COLORING CONSTRAINT SOLVING
+// ============================================================================
+
+// Solve constraints for particles with a specific color
+// This ensures no two connected particles are processed simultaneously
+void solveConstraintsForColor(uint color, uint globalIdx) {
+    // Skip if particle doesn't have this color
+    if (particleColors[globalIdx] != color) return;
+
+    float isPinned = pinnedFlags[globalIdx];
+    if (isPinned >= 0.5f) return;  // Skip pinned particles
+
+    // Bounds check for color
+    if (color >= uint(MAX_COLORS)) return;
+
+    // Use shared memory position for consistent reads
+    vec3 myPos = sharedPositions[gl_LocalInvocationID.x];
+    vec3 totalCorrection = vec3(0.0f);
+
+    // Get constraint range for this particle from adjacency list
+    ivec2 constraintRange = particleConstraints[globalIdx];
+    int offset = constraintRange.x;
+    int count = constraintRange.y;
+
+    // Bounds check for adjacency list
+    if (offset < 0 || count <= 0 || count > 24) return;  // Support up to 24 constraints
+
+    // Iterate constraints that involve this particle
+    for (int i = 0; i < count; i++) {
+        int cIdx = constraintIndices[offset + i];
+
+        if (cIdx < 0 || cIdx >= numConstraints) continue;
+
+        ConstraintDataType constraint = constraints[cIdx];
+        int p1Idx = constraint.indices.x;
+        int p2Idx = constraint.indices.y;
+
+        int otherIdx = (p1Idx == int(globalIdx)) ? p2Idx : p1Idx;
+
+        if (otherIdx < 0 || otherIdx >= numParticles) continue;
+
+        float otherPinned = pinnedFlags[otherIdx];
+        if (isPinned >= 0.5f && otherPinned >= 0.5f) continue;
+
+        // Read other position from shared memory if same work group
+        vec3 otherPos;
+        uint otherLocalIdx = uint(otherIdx) & 127u;
+        if ((uint(otherIdx) & ~127u) == (globalIdx & ~127u)) {
+            otherPos = sharedPositions[otherLocalIdx];
+        } else {
+            otherPos = particles[otherIdx].position.xyz;
+        }
+
+        vec3 delta = otherPos - myPos;
+        float distSq = dot(delta, delta);
+
+        if (distSq >= EPSILON * EPSILON) {
+            float dist = sqrt(distSq);
+            float restLen = constraint.params.x;
+            float stiffness = clamp(constraint.params.y, 0.3f, 0.7f);  // Reduced from 0.5-1.0
+
+            float diff = (dist - restLen) / dist;
+
+            // Strong correction with clamp
+            float maxCorrection = restLen * 1.5f;
+            float correctionMag = min(abs(diff * restLen), maxCorrection);
+            vec3 correction = normalize(delta) * correctionMag * stiffness;
+
+            if (isPinned < 0.5f && otherPinned < 0.5f) {
+                totalCorrection -= correction * 0.5f;
+            } else if (isPinned < 0.5f) {
+                totalCorrection -= correction;
+            }
+        }
+    }
+
+    // Apply correction to shared memory
+    float correctionLen = length(totalCorrection);
+    if (correctionLen > EPSILON) {
+        float maxTotalCorrection = 0.3f;  // Per-iteration limit
+        if (correctionLen > maxTotalCorrection) {
+            totalCorrection = normalize(totalCorrection) * maxTotalCorrection;
+        }
+        sharedPositions[gl_LocalInvocationID.x] += totalCorrection;
+        atomicAdd(colorCollisionCounts[color], 1u);
     }
 }
 
@@ -202,16 +304,22 @@ void main() {
     uint globalIdx = gl_GlobalInvocationID.x;
     uint localIdx = gl_LocalInvocationID.x;
 
-    // === STAGE 0: Reset collision counter ===
+    // === STAGE 0: Reset counters (first work group only) ===
     if (gl_WorkGroupID.x == 0u && gl_WorkGroupID.y == 0u && gl_WorkGroupID.z == 0u && localIdx == 0u) {
         collisionCount = 0u;
+        // Reset color collision counts for all colors
+        for (int c = 0; c < MAX_COLORS; c++) {
+            colorCollisionCounts[c] = 0u;
+        }
     }
 
-    // === STAGE 1: Load positions to shared memory ===
+    // === STAGE 1: Load positions and colors to shared memory ===
     if (globalIdx < numParticles) {
         sharedPositions[localIdx] = particles[globalIdx].position.xyz;
+        sharedColors[localIdx] = particleColors[globalIdx];
     } else {
         sharedPositions[localIdx] = vec3(0.0f);
+        sharedColors[localIdx] = 0u;
     }
 
     barrier();
@@ -226,19 +334,23 @@ void main() {
             vec3 prevPos = particle.prevPosition.xyz;
             float mass = particle.position.w;
 
-            // CRITICAL: Add STRONG damping to prevent velocity accumulation
-            float velocityDamping = 0.90f;  // Strong damping (was 0.98f)
+            // Apply gravity FIRST, then damping for faster falling
+            vec3 oldVelocity = pos - prevPos;
             
-            vec3 velocity = (pos - prevPos) * velocityDamping;
+            // Scale gravity for better feel (5x for faster falling)
+            float gravityScale = 5.0f;
+            vec3 acceleration = gravity * gravityScale * deltaTime * deltaTime;
             
-            // CRITICAL: Clamp velocity to prevent explosion
-            float maxVelocity = 5.0f;  // 5 m/s max
+            vec3 velocity = oldVelocity * 0.92f + acceleration;
+
+            // Higher max velocity for faster falling
+            float maxVelocity = 40.0f;
             float velocityLen = length(velocity);
             if (velocityLen > maxVelocity) {
                 velocity = normalize(velocity) * maxVelocity;
             }
-            
-            vec3 newPos = pos + velocity + gravity * deltaTime * deltaTime;
+
+            vec3 newPos = pos + velocity;
 
             sharedPositions[localIdx] = newPos;
             particles[globalIdx].prevPosition = vec4(pos, 0.0f);
@@ -248,7 +360,6 @@ void main() {
     barrier();
 
     // === STAGE 2.5: Sync Verlet results to particles[] ===
-    // This ensures ALL work groups see updated positions before constraint solving
     if (globalIdx < numParticles) {
         float isPinned = pinnedFlags[globalIdx];
         if (isPinned < 0.5f) {
@@ -258,29 +369,19 @@ void main() {
 
     barrier();
 
-    // === STAGE 3: Constraint Solving ===
-    // Single pass constraint solving with stable cross-workgroup synchronization
-    // Constraints are solved gradually over multiple frames for stability
-
+    // === STAGE 3: Constraint Solving (Single Pass - Stable) ===
+    // Fallback to stable single-pass approach
     if (globalIdx < numParticles) {
         float isPinned = pinnedFlags[globalIdx];
         if (isPinned < 0.5f) {
             vec3 myPos = sharedPositions[localIdx];
-
-            // NaN/Infinity check - reset invalid positions
-            if (isnan(myPos.x) || isnan(myPos.y) || isnan(myPos.z) ||
-                isinf(myPos.x) || isinf(myPos.y) || isinf(myPos.z)) {
-                myPos = vec3(0.0f, 10.0f, 0.0f);
-                sharedPositions[localIdx] = myPos;
-            }
-
             vec3 totalCorrection = vec3(0.0f);
 
             ivec2 constraintRange = particleConstraints[globalIdx];
             int offset = constraintRange.x;
             int count = constraintRange.y;
 
-            if (offset >= 0 && count > 0 && count <= 16) {
+            if (offset >= 0 && count > 0 && count <= 24) {
                 for (int i = 0; i < count; i++) {
                     int cIdx = constraintIndices[offset + i];
                     if (cIdx < 0 || cIdx >= numConstraints) continue;
@@ -295,7 +396,6 @@ void main() {
                     float otherPinned = pinnedFlags[otherIdx];
                     if (isPinned >= 0.5f && otherPinned >= 0.5f) continue;
 
-                    // Read position: shared memory for same work group, particles[] for others
                     vec3 otherPos;
                     uint otherLocalIdx = uint(otherIdx) & 127u;
                     if ((uint(otherIdx) & ~127u) == (globalIdx & ~127u)) {
@@ -304,53 +404,41 @@ void main() {
                         otherPos = particles[otherIdx].position.xyz;
                     }
 
-                    // Skip invalid positions
-                    if (isnan(otherPos.x) || isnan(otherPos.y) || isnan(otherPos.z) ||
-                        isinf(otherPos.x) || isinf(otherPos.y) || isinf(otherPos.z)) {
-                        continue;
-                    }
-
                     vec3 delta = otherPos - myPos;
                     float distSq = dot(delta, delta);
 
                     if (distSq >= EPSILON * EPSILON) {
                         float dist = sqrt(distSq);
                         float restLen = constraint.params.x;
-
-                        // Skip invalid restLen
-                        if (restLen < 0.01f || restLen > 10.0f || isnan(restLen)) {
-                            continue;
-                        }
-
+                        
                         // Gentle constraint - solved gradually over multiple frames
                         float diff = (dist - restLen);
-
-                        // Deadzone: skip tiny violations to prevent numerical noise
                         float deadzone = 0.001f;
-                        if (abs(diff) < deadzone) {
-                            continue;
-                        }
-
-                        float stiffness = clamp(constraint.params.y, 0.05f, 0.1f);
-                        float correctionFactor = 0.02f;  // 2% per frame
+                        if (abs(diff) < deadzone) continue;
+                        
+                        float stiffness = clamp(constraint.params.y, 0.05f, 0.15f);  // Reduced
+                        float correctionFactor = 0.02f;  // 2% per frame (reduced from 5%)
                         float correctionMag = diff * stiffness * correctionFactor;
-
-                        // Clamp: max 5mm per constraint per frame
-                        float maxIndividualCorrection = 0.005f;
+                        float maxIndividualCorrection = 0.005f;  // 5mm max (reduced from 1cm)
                         correctionMag = clamp(correctionMag, -maxIndividualCorrection, maxIndividualCorrection);
-
+                        
                         vec3 correction = normalize(delta) * correctionMag;
 
-                        // Only ONE particle moves (smaller index) to prevent overcorrection
+                        // Only ONE particle moves (smaller index)
                         if (globalIdx < uint(otherIdx) && isPinned < 0.5f) {
                             totalCorrection += correction;
                         }
                     }
                 }
 
-                // Apply correction
+                // Apply correction with TOTAL clamp per particle
                 float correctionLen = length(totalCorrection);
-                if (correctionLen > EPSILON && correctionLen < 1.0f) {
+                if (correctionLen > EPSILON) {
+                    // Total correction clamp per particle per frame
+                    float maxTotalCorrection = 0.04f;  // 4cm max TOTAL (increased from 2cm)
+                    if (correctionLen > maxTotalCorrection) {
+                        totalCorrection = normalize(totalCorrection) * maxTotalCorrection;
+                    }
                     sharedPositions[localIdx] += totalCorrection;
                 }
             }
@@ -359,7 +447,7 @@ void main() {
 
     barrier();
 
-    // Sync to particles buffer with NaN check
+    // Sync after constraint solving
     if (globalIdx < numParticles) {
         vec3 pos = sharedPositions[localIdx];
         if (isnan(pos.x) || isnan(pos.y) || isnan(pos.z) ||
@@ -435,8 +523,13 @@ void main() {
                 vec3 velocity = pos - prevPos;
                 float normalVel = dot(velocity, collisionNormal);
                 vec3 tangentVel = velocity - normalVel * collisionNormal;
-                tangentVel *= FRICTION_COEFFICIENT;
-                normalVel *= dampingFactor;
+                
+                // HIGHER friction for smoother sliding on sphere
+                tangentVel *= 0.98f;  // Increased from 0.95f
+                
+                // BOUNCY collision for better feel
+                normalVel *= 0.5f;  // Reduced from 0.85f - more bouncy
+                
                 velocity = tangentVel + normalVel * collisionNormal;
                 particles[globalIdx].prevPosition = vec4(newPos - velocity, 0.0f);
             }

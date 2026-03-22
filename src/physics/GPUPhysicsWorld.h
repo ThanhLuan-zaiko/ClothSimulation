@@ -10,15 +10,15 @@
 namespace cloth {
 
 // Maximum particles for all cloths
-// Note: Each cloth with resolution N needs ~N*N particles and ~5*N*N constraints
-// For 3 cloths at 70x70: 3*5041=15123 particles, 3*25000=75000 constraints
+// Note: Each cloth with resolution N needs ~N*N particles and ~8*N*N constraints (with double bend/shear)
+// For 3 cloths at 70x70: 3*5041=15123 particles, 3*49000=147000 constraints
 const size_t MAX_PARTICLES = 20000;
-const size_t MAX_CONSTRAINTS = 120000;  // Increased from 60000 to support 3x 70x70 cloths
-const int MAX_COLORS = 16;  // Increased from 8 to match shader (9-color pattern + buffer)
+const size_t MAX_CONSTRAINTS = 200000;  // Increased to support double constraints
+const int MAX_COLORS = 9;  // Match shader (9-color pattern)
 
 // GPU Physics simulation parameters
 struct GPUPhysicsConfig {
-    glm::vec3 gravity = glm::vec3(0.0f, -9.81f, 0.0f);
+    glm::vec3 gravity = glm::vec3(0.0f, -9.81f, 0.0f);  // Normal gravity
     float damping = 0.98f;
     int iterations = 5;
     float collisionMargin = 0.05f;

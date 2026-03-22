@@ -176,8 +176,8 @@ bool GPUPhysicsWorld::Initialize(const GPUPhysicsConfig& config) {
     // Constraint indices buffer (flat array)
     glGenBuffers(1, &m_ConstraintIndicesBuffer);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_ConstraintIndicesBuffer);
-    // Max 8 constraints per particle × MAX_PARTICLES
-    glBufferData(GL_SHADER_STORAGE_BUFFER, MAX_PARTICLES * 8 * sizeof(int), nullptr, GL_DYNAMIC_COPY);
+    // Max 24 constraints per particle × MAX_PARTICLES (support double bend/shear)
+    glBufferData(GL_SHADER_STORAGE_BUFFER, MAX_PARTICLES * 24 * sizeof(int), nullptr, GL_DYNAMIC_COPY);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
     // IMPORTANT: Set initialized flag
@@ -250,17 +250,32 @@ size_t GPUPhysicsWorld::InitializeCloth(int widthSegments, int heightSegments,
                                         float segmentLength, bool pinned) {
     // Calculate particle count
     int numParticles = (widthSegments + 1) * (heightSegments + 1);
+    
+    // Count constraints accurately (with DOUBLE shear and bend)
     int numConstraints = 0;
-
-    // Count constraints
+    
     // Structural (horizontal + vertical)
     numConstraints += widthSegments * (heightSegments + 1);  // Horizontal
     numConstraints += heightSegments * (widthSegments + 1);  // Vertical
-    // Shear (diagonal)
-    numConstraints += widthSegments * heightSegments * 2;
-    // Bend (horizontal + vertical, skip one)
-    numConstraints += (widthSegments - 1) * (heightSegments + 1);  // Horizontal bend
-    numConstraints += (heightSegments - 1) * (widthSegments + 1);  // Vertical bend
+    
+    // Shear (DOUBLE: primary + secondary + skip-2)
+    numConstraints += widthSegments * heightSegments * 2;  // Primary + Secondary
+    // Skip-2 shear (only when x < widthSegments-1 && y < heightSegments-1)
+    if (widthSegments > 1 && heightSegments > 1) {
+        numConstraints += (widthSegments - 1) * (heightSegments - 1) * 2;
+    }
+    
+    // Bend (DOUBLE: skip-1 + skip-2)
+    // Skip-1 bend
+    numConstraints += (widthSegments - 1) * (heightSegments + 1);  // Horizontal
+    numConstraints += (widthSegments + 1) * (heightSegments - 1);  // Vertical
+    // Skip-2 bend
+    if (widthSegments > 2) {
+        numConstraints += (widthSegments - 2) * (heightSegments + 1);  // Horizontal
+    }
+    if (heightSegments > 2) {
+        numConstraints += (widthSegments + 1) * (heightSegments - 2);  // Vertical
+    }
 
     size_t particleOffset = m_TotalParticles;
     size_t constraintOffset = m_TotalConstraints;
@@ -308,40 +323,81 @@ size_t GPUPhysicsWorld::InitializeCloth(int widthSegments, int heightSegments,
         }
     }
 
-    // Shear constraints
+    // Shear constraints (DOUBLE: add both diagonal directions)
     for (int y = 0; y < heightSegments; y++) {
         for (int x = 0; x < widthSegments; x++) {
+            // Primary shear (bottom-left to top-right)
             int p1 = y * (widthSegments + 1) + x;
             int p2 = p1 + (widthSegments + 1) + 1;
             constraints[cIdx].indices = glm::ivec4(p1, p2, 1, 0);
             constraints[cIdx].params = glm::vec2(glm::length(glm::vec3(segmentLength, 0, segmentLength)), 0.5f);
             cIdx++;
 
+            // Secondary shear (bottom-right to top-left)
             p1 = y * (widthSegments + 1) + x + 1;
             p2 = p1 + (widthSegments + 1) - 1;
             constraints[cIdx].indices = glm::ivec4(p1, p2, 1, 0);
             constraints[cIdx].params = glm::vec2(glm::length(glm::vec3(segmentLength, 0, segmentLength)), 0.5f);
             cIdx++;
+            
+            // Additional shear (skip 2 particles for extra stability)
+            if (x < widthSegments - 1 && y < heightSegments - 1) {
+                p1 = y * (widthSegments + 1) + x;
+                p2 = p1 + 2 * (widthSegments + 1) + 2;
+                constraints[cIdx].indices = glm::ivec4(p1, p2, 1, 0);
+                constraints[cIdx].params = glm::vec2(glm::length(glm::vec3(segmentLength*2, 0, segmentLength*2)), 0.4f);
+                cIdx++;
+                
+                p1 = y * (widthSegments + 1) + x + 2;
+                p2 = p1 + 2 * (widthSegments + 1) - 2;
+                constraints[cIdx].indices = glm::ivec4(p1, p2, 1, 0);
+                constraints[cIdx].params = glm::vec2(glm::length(glm::vec3(segmentLength*2, 0, segmentLength*2)), 0.4f);
+                cIdx++;
+            }
         }
     }
 
-    // Bend constraints
+    // Bend constraints (DOUBLE: add both skip-1 and skip-2)
+    // Skip-1 bend (horizontal)
     for (int y = 0; y <= heightSegments; y++) {
         for (int x = 0; x < widthSegments - 1; x++) {
             int p1 = y * (widthSegments + 1) + x;
             int p2 = p1 + 2;
             constraints[cIdx].indices = glm::ivec4(p1, p2, 2, 0);
-            constraints[cIdx].params = glm::vec2(segmentLength * 2.0f, 0.1f);
+            constraints[cIdx].params = glm::vec2(segmentLength * 2.0f, 0.2f);  // Reduced from 0.3f
             cIdx++;
         }
     }
 
+    // Skip-1 bend (vertical)
     for (int x = 0; x <= widthSegments; x++) {
         for (int y = 0; y < heightSegments - 1; y++) {
             int p1 = y * (widthSegments + 1) + x;
             int p2 = p1 + 2 * (widthSegments + 1);
             constraints[cIdx].indices = glm::ivec4(p1, p2, 2, 0);
-            constraints[cIdx].params = glm::vec2(segmentLength * 2.0f, 0.1f);
+            constraints[cIdx].params = glm::vec2(segmentLength * 2.0f, 0.2f);  // Reduced from 0.3f
+            cIdx++;
+        }
+    }
+    
+    // Skip-2 bend (horizontal) - extra stability
+    for (int y = 0; y <= heightSegments; y++) {
+        for (int x = 0; x < widthSegments - 2; x++) {
+            int p1 = y * (widthSegments + 1) + x;
+            int p2 = p1 + 3;
+            constraints[cIdx].indices = glm::ivec4(p1, p2, 2, 0);
+            constraints[cIdx].params = glm::vec2(segmentLength * 3.0f, 0.15f);  // Reduced from 0.2f
+            cIdx++;
+        }
+    }
+
+    // Skip-2 bend (vertical) - extra stability
+    for (int x = 0; x <= widthSegments; x++) {
+        for (int y = 0; y < heightSegments - 2; y++) {
+            int p1 = y * (widthSegments + 1) + x;
+            int p2 = p1 + 3 * (widthSegments + 1);
+            constraints[cIdx].indices = glm::ivec4(p1, p2, 2, 0);
+            constraints[cIdx].params = glm::vec2(segmentLength * 3.0f, 0.15f);  // Reduced from 0.2f
             cIdx++;
         }
     }
@@ -378,9 +434,7 @@ size_t GPUPhysicsWorld::InitializeCloth(int widthSegments, int heightSegments,
                      pinnedFlags.data(), GL_DYNAMIC_DRAW);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
-        // Initialize particle colors for graph coloring
-        // Use 9-color pattern for full grid safety (handles bend constraints)
-        // Pattern: (x%3) + (y%3)*3 gives values 0-8
+        // Initialize particle colors for graph coloring (9-color pattern)
         std::vector<unsigned int> particleColors(MAX_PARTICLES, 0);
         for (int y = 0; y <= heightSegments; y++) {
             for (int x = 0; x <= widthSegments; x++) {
@@ -553,14 +607,22 @@ void GPUPhysicsWorld::Update(float deltaTime) {
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, m_CollisionDataBuffer);
     }
 
-    // Bind constraint adjacency list buffer (binding point 7)
+    // Bind constraint adjacency list buffer (binding point 9)
     if (m_ConstraintAdjacencyBuffer != 0) {
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, m_ConstraintAdjacencyBuffer);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, m_ConstraintAdjacencyBuffer);
     }
 
-    // Bind constraint indices buffer (binding point 8)
+    // Bind constraint indices buffer (binding point 10)
     if (m_ConstraintIndicesBuffer != 0) {
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 8, m_ConstraintIndicesBuffer);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 10, m_ConstraintIndicesBuffer);
+    }
+
+    // Bind graph coloring buffers
+    if (m_ParticleColorsBuffer != 0) {
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, m_ParticleColorsBuffer);
+    }
+    if (m_ColorCollisionCountBuffer != 0) {
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 8, m_ColorCollisionCountBuffer);
     }
 
     // Bind uniform buffers to binding points 2 and 3
@@ -759,10 +821,10 @@ void GPUPhysicsWorld::BuildConstraintAdjacencyList() {
         adjacency[p].x = static_cast<int>(constraintIndices.size());  // offset
         adjacency[p].y = static_cast<int>(particleConstraints[p].size());  // count
 
-        // Sanity check: a particle should have at most ~12 constraints in a grid
-        if (adjacency[p].y > 16) {
-            std::cerr << "[GPU] WARNING: Particle " << p << " has " << adjacency[p].y 
-                      << " constraints (expected max ~12) - possible corruption!" << std::endl;
+        // Sanity check: with double constraints, particles can have 20-24 constraints
+        if (adjacency[p].y > 24) {
+            std::cerr << "[GPU] WARNING: Particle " << p << " has " << adjacency[p].y
+                      << " constraints - possible corruption!" << std::endl;
         }
 
         maxConstraintsPerParticle = std::max(maxConstraintsPerParticle, adjacency[p].y);
