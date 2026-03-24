@@ -19,12 +19,29 @@ const int MAX_COLORS = 9;  // Match shader (9-color pattern)
 // GPU Physics simulation parameters
 struct GPUPhysicsConfig {
     glm::vec3 gravity = glm::vec3(0.0f, -9.81f, 0.0f);  // Normal gravity
-    float damping = 0.98f;
-    int iterations = 5;
+    float damping = 0.95f;               // Slightly more damping (was 0.98)
+    int iterations = 8;                  // Higher default (was 5)
     float collisionMargin = 0.05f;
     float dampingFactor = 0.85f;
     float frictionFactor = 0.92f;
-    int collisionSubsteps = 2;  // Number of substeps for collision detection
+    int collisionSubsteps = 2;
+    
+    // NEW: Advanced physics parameters
+    float gravityScale = 3.5f;           // Reduced (was 5.0)
+    float airResistance = 0.992f;        // Reduced resistance (was 0.995)
+    float windStrength = 0.0f;           // Wind strength (0 = no wind)
+    glm::vec3 windDirection = glm::vec3(1.0f, 0.0f, 0.0f);  // Wind direction
+    float stretchResistance = 0.8f;      // Increased (was 0.5)
+    float maxVelocity = 35.0f;           // Reduced (was 40.0)
+    float selfCollisionRadius = 0.08f;   // Self-collision detection radius
+    float selfCollisionStrength = 0.35f; // Self-collision repulsion strength
+    
+    // Sphere friction parameters
+    float sphereStaticFriction = 0.85f;    // Friction when nearly stopped
+    float sphereDynamicFriction = 0.92f;   // Friction when sliding
+    float sphereBounce = 0.10f;            // Reduced (was 0.15)
+    float sphereGripFactor = 0.3f;         // Extra grip for cloth sticking
+    float staticFrictionThreshold = 0.5f;  // Velocity threshold for static friction
 };
 
 // Collision parameters
@@ -74,7 +91,7 @@ public:
     ConstraintBuffer& GetConstraintBuffer() { return m_ConstraintBuffer; }
 
     // Configuration
-    void SetConfig(const GPUPhysicsConfig& config) { m_Config = config; UpdateUniforms(1.0f / 60.0f); }
+    void SetConfig(const GPUPhysicsConfig& config);
     const GPUPhysicsConfig& GetConfig() const { return m_Config; }
     
     // Set batch count for GPU dispatch (for TDR prevention on Intel GPU)

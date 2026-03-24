@@ -70,7 +70,7 @@ struct AppState {
     int lastTerrainTextureIndex = -1;  // Track terrain texture index
     
     // Reflection quality settings (configurable)
-    int reflectionResolution = 512;     // 256, 512, 1024
+    int reflectionResolution = 1024;     // 256, 512, 1024
     bool reflectionHDR = true;          // Enable HDR rendering
     float reflectionExposure = 1.2f;    // HDR exposure value
     float sphereMetallic = 1.0f;        // PBR metallic (0-1)
@@ -186,15 +186,22 @@ struct AppState {
         lastReflectionViewDir = camera.GetFront();
         lastTerrainTextureIndex = -1;
 
-        // Initialize GPU physics world with better cloth settings
+        // Initialize GPU physics world with GPU-detected settings
         GPUPhysicsConfig config;
         config.gravity = glm::vec3(0.0f, -9.81f, 0.0f);
-        config.damping = 0.99f;        // Less damping - more bouncy
-        config.iterations = 5;         // More iterations - stiffer constraints
+        config.damping = 0.99f;
+        config.iterations = gpuInfo.physicsIterations;  // ← Use GPU-detected iterations (LOW=2, MEDIUM=3, HIGH=4, ULTRA=5)
         config.collisionMargin = 0.05f;
-        config.dampingFactor = 0.95f;  // Less damping
-        config.frictionFactor = 0.98f; // Less friction
-        config.collisionSubsteps = 2;  // More substeps for better collision
+        config.dampingFactor = 0.95f;
+        config.frictionFactor = 0.98f;
+        config.collisionSubsteps = gpuInfo.collisionSubsteps;
+        
+        // CRITICAL: Set quality level BEFORE Initialize() so shader compiles with correct iterations
+        bool useTextureGather = (selectedPreset == QualityPreset::HIGH || 
+                                  selectedPreset == QualityPreset::ULTRA);
+        physicsWorld.SetQualityLevel(gpuInfo.physicsIterations, useTextureGather);
+        
+        // Now initialize with matching config
         physicsWorld.Initialize(config);
 
         // Set collision sphere in physics world

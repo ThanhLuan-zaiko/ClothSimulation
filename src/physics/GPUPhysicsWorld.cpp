@@ -126,16 +126,18 @@ bool GPUPhysicsWorld::Initialize(const GPUPhysicsConfig& config) {
     }
 
     // Create uniform buffers with CORRECT sizes for std140 layout
-    // PhysicsParams: vec3(16) + float(4) + float(4) + int(4) + int(4) + float(4) + vec2(8) + float(4) = 52 bytes → 64 bytes aligned
+    // PhysicsParams: Updated layout with advanced physics parameters
+    // Total: ~112 bytes → 128 bytes aligned
     glGenBuffers(1, &m_UniformBuffer);
     glBindBuffer(GL_UNIFORM_BUFFER, m_UniformBuffer);
-    glBufferData(GL_UNIFORM_BUFFER, 64, nullptr, GL_STATIC_DRAW);
+    glBufferData(GL_UNIFORM_BUFFER, 128, nullptr, GL_STATIC_DRAW);
     glBindBuffer(GL_UNIFORM_BUFFER, 0);
 
-    // CollisionParams: vec3(16) + float(4) + float(4) + float(4) + float(4) + float(4) + int(4) = 40 bytes → 48 bytes aligned
+    // CollisionParams: Updated layout with sphere friction parameters
+    // Total: ~64 bytes → 64 bytes aligned
     glGenBuffers(1, &m_CollisionUniformBuffer);
     glBindBuffer(GL_UNIFORM_BUFFER, m_CollisionUniformBuffer);
-    glBufferData(GL_UNIFORM_BUFFER, 48, nullptr, GL_STATIC_DRAW);
+    glBufferData(GL_UNIFORM_BUFFER, 64, nullptr, GL_STATIC_DRAW);
     glBindBuffer(GL_UNIFORM_BUFFER, 0);
 
     UpdateUniforms(1.0f / 60.0f);
@@ -216,11 +218,22 @@ bool GPUPhysicsWorld::LoadComputeShader() {
         // Integrated: Use optimized path
         std::cout << "[GPU] Using INTEGRATED shader path (textureLod)" << std::endl;
     }
-    
+
     // Apply auto-tuned iteration count
+    // Replace any value of MAX_ITERATIONS_RUNTIME with the target value
     std::cout << "[GPU] MAX_ITERATIONS = " << m_MaxIterations << std::endl;
-    shaderSource = replace(shaderSource, "#define MAX_ITERATIONS_RUNTIME 2", 
-                           "#define MAX_ITERATIONS_RUNTIME " + std::to_string(m_MaxIterations));
+    
+    // Find and replace the #define line (whatever value it currently has)
+    size_t definePos = shaderSource.find("#define MAX_ITERATIONS_RUNTIME");
+    if (definePos != std::string::npos) {
+        // Find end of line
+        size_t lineEnd = shaderSource.find('\n', definePos);
+        if (lineEnd != std::string::npos) {
+            // Replace the entire #define line
+            std::string newDefine = "#define MAX_ITERATIONS_RUNTIME " + std::to_string(m_MaxIterations);
+            shaderSource.replace(definePos, lineEnd - definePos, newDefine);
+        }
+    }
 
     // Compile shader from source
     m_ComputeShader = Shader::CreateComputeShaderFromSource(shaderSource);
@@ -687,8 +700,8 @@ void GPUPhysicsWorld::Update(float deltaTime) {
 
 void GPUPhysicsWorld::UpdateUniforms(float deltaTime) {
     // Physics params uniform block
-    // Layout must match shader exactly (std140 layout):
-    // - vec3 gravity (16 bytes: xyz + padding)
+    // Updated layout to match shader (std140 layout):
+    // - vec3 gravity (16 bytes)
     // - float deltaTime (4 bytes)
     // - float damping (4 bytes)
     // - int numParticles (4 bytes)
@@ -696,62 +709,127 @@ void GPUPhysicsWorld::UpdateUniforms(float deltaTime) {
     // - float restLength (4 bytes)
     // - vec2 terrainSize (8 bytes)
     // - float terrainHeightScale (4 bytes)
+    // - float gravityScale (4 bytes)
+    // - float airResistance (4 bytes)
+    // - float windStrength (4 bytes)
+    // - vec3 windDirection (16 bytes)
+    // - float stretchResistance (4 bytes)
+    // - float maxVelocity (4 bytes)
+    // - float selfCollisionRadius (4 bytes)
+    // - float selfCollisionStrength (4 bytes)
+    // Total: ~112 bytes → 128 bytes aligned (4 vec4s)
+    
     glBindBuffer(GL_UNIFORM_BUFFER, m_UniformBuffer);
 
-    float physicsData[16]; // 4 vec4s = 64 bytes
+    float physicsData[32]; // 8 vec4s = 128 bytes
+    int idx = 0;
+    
     // vec4: gravity
-    physicsData[0] = m_Config.gravity.x;
-    physicsData[1] = m_Config.gravity.y;
-    physicsData[2] = m_Config.gravity.z;
-    physicsData[3] = deltaTime;  // deltaTime comes AFTER gravity (matches shader layout)
+    physicsData[idx++] = m_Config.gravity.x;
+    physicsData[idx++] = m_Config.gravity.y;
+    physicsData[idx++] = m_Config.gravity.z;
+    physicsData[idx++] = deltaTime;
 
     // vec4: damping, numParticles, numConstraints, restLength
-    physicsData[4] = m_Config.damping;
-    physicsData[5] = static_cast<float>(m_TotalParticles);
-    physicsData[6] = static_cast<float>(m_TotalConstraints);
-    physicsData[7] = 0.0f;  // restLength (unused, padding)
+    physicsData[idx++] = m_Config.damping;
+    physicsData[idx++] = static_cast<float>(m_TotalParticles);
+    physicsData[idx++] = static_cast<float>(m_TotalConstraints);
+    physicsData[idx++] = 0.0f; // restLength (unused)
 
-    // vec4: terrainSize (vec2) + terrainHeightScale + padding
-    if (m_Terrain) {
-        physicsData[8] = 100.0f; // terrainSize.x
-        physicsData[9] = 100.0f; // terrainSize.y
-        physicsData[10] = 1.0f;  // terrainHeightScale
-    } else {
-        physicsData[8] = 100.0f;
-        physicsData[9] = 100.0f;
-        physicsData[10] = 1.0f;
-    }
-    physicsData[11] = 0.0f;  // padding
+    // vec4: terrainSize (vec2) + terrainHeightScale + gravityScale
+    physicsData[idx++] = 100.0f; // terrainSize.x
+    physicsData[idx++] = 100.0f; // terrainSize.y
+    physicsData[idx++] = 1.0f;   // terrainHeightScale
+    physicsData[idx++] = m_Config.gravityScale;
+
+    // vec4: airResistance, windStrength, pad, pad
+    physicsData[idx++] = m_Config.airResistance;
+    physicsData[idx++] = m_Config.windStrength;
+    physicsData[idx++] = 0.0f; // padding
+    physicsData[idx++] = 0.0f; // padding
+
+    // vec4: windDirection (vec3) + stretchResistance
+    physicsData[idx++] = m_Config.windDirection.x;
+    physicsData[idx++] = m_Config.windDirection.y;
+    physicsData[idx++] = m_Config.windDirection.z;
+    physicsData[idx++] = m_Config.stretchResistance;
+
+    // vec4: maxVelocity, selfCollisionRadius, selfCollisionStrength, pad
+    physicsData[idx++] = m_Config.maxVelocity;
+    physicsData[idx++] = m_Config.selfCollisionRadius;
+    physicsData[idx++] = m_Config.selfCollisionStrength;
+    physicsData[idx++] = 0.0f; // padding
 
     glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(physicsData), physicsData);
     glBindBuffer(GL_UNIFORM_BUFFER, 0);
 
-    // Bind uniform buffer to binding point 2 (NOT 0 - SSBOs use 0 and 1)
+    // Bind uniform buffer to binding point 2
     if (m_PhysicsParamsBlockIndex != -1) {
         glBindBufferBase(GL_UNIFORM_BUFFER, 2, m_UniformBuffer);
     }
 
-    // Collision params
+    // Collision params - Updated layout
+    // - vec3 sphereCenter (16 bytes)
+    // - float sphereRadius (4 bytes)
+    // - float groundLevel (4 bytes)
+    // - float collisionMargin (4 bytes)
+    // - float dampingFactor (4 bytes)
+    // - float frictionFactor (4 bytes)
+    // - int collisionSubsteps (4 bytes)
+    // - float sphereStaticFriction (4 bytes)
+    // - float sphereDynamicFriction (4 bytes)
+    // - float sphereBounce (4 bytes)
+    // - float sphereGripFactor (4 bytes)
+    // - float staticFrictionThreshold (4 bytes)
+    // Total: ~64 bytes → 64 bytes aligned (2 vec4s)
+    
     glBindBuffer(GL_UNIFORM_BUFFER, m_CollisionUniformBuffer);
 
-    float collisionData[12]; // 3 vec4s = 48 bytes
-    collisionData[0] = m_Collision.sphereCenter.x;
-    collisionData[1] = m_Collision.sphereCenter.y;
-    collisionData[2] = m_Collision.sphereCenter.z;
-    collisionData[3] = m_Collision.sphereRadius;
+    float collisionData[16]; // 4 vec4s = 64 bytes
+    idx = 0;
+    
+    collisionData[idx++] = m_Collision.sphereCenter.x;
+    collisionData[idx++] = m_Collision.sphereCenter.y;
+    collisionData[idx++] = m_Collision.sphereCenter.z;
+    collisionData[idx++] = m_Collision.sphereRadius;
 
-    collisionData[4] = m_Collision.groundLevel;
-    collisionData[5] = m_Config.collisionMargin;
-    collisionData[6] = m_Config.dampingFactor;
-    collisionData[7] = m_Config.frictionFactor;
-    collisionData[8] = static_cast<float>(m_Config.collisionSubsteps);
+    collisionData[idx++] = m_Collision.groundLevel;
+    collisionData[idx++] = m_Config.collisionMargin;
+    collisionData[idx++] = m_Config.dampingFactor;
+    collisionData[idx++] = m_Config.frictionFactor;
+
+    collisionData[idx++] = static_cast<float>(m_Config.collisionSubsteps);
+    collisionData[idx++] = m_Config.sphereStaticFriction;
+    collisionData[idx++] = m_Config.sphereDynamicFriction;
+    collisionData[idx++] = m_Config.sphereBounce;
+
+    collisionData[idx++] = m_Config.sphereGripFactor;
+    collisionData[idx++] = m_Config.staticFrictionThreshold;
+    collisionData[idx++] = 0.0f;  // padding
+    collisionData[idx++] = 0.0f;
 
     glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(collisionData), collisionData);
     glBindBuffer(GL_UNIFORM_BUFFER, 0);
 
-    // Bind collision uniform buffer to binding point 3 (NOT 1 - SSBOs use 0 and 1)
+    // Bind collision uniform buffer to binding point 3
     if (m_CollisionParamsBlockIndex != -1) {
         glBindBufferBase(GL_UNIFORM_BUFFER, 3, m_CollisionUniformBuffer);
+    }
+}
+
+void GPUPhysicsWorld::SetConfig(const GPUPhysicsConfig& config) {
+    // Check if iterations changed - need to recompile shader
+    bool iterationsChanged = (m_Config.iterations != config.iterations);
+    
+    m_Config = config;
+    UpdateUniforms(1.0f / 60.0f);
+    
+    // If iterations changed and shader already loaded, recompile with new value
+    if (iterationsChanged && m_ShaderLoaded) {
+        std::cout << "[GPUPhysicsWorld] Config changed: iterations=" << config.iterations 
+                  << " - recompiling shader..." << std::endl;
+        m_MaxIterations = config.iterations;  // Update m_MaxIterations to match config
+        LoadComputeShader();
     }
 }
 
@@ -952,21 +1030,21 @@ void GPUPhysicsWorld::AutoTuneSettings() {
     
     // Determine optimal settings based on FPS
     if (fps > 120) {
-        m_MaxIterations = 8;  // Reduced from 10 for stability
+        m_MaxIterations = 16; // ULTRA
         m_UseTextureGather = true;
-        std::cout << "[Auto-Tune] Setting: ULTRA (8 iterations, textureGather)" << std::endl;
+        std::cout << "[Auto-Tune] Setting: ULTRA (16 iterations, textureGather)" << std::endl;
     } else if (fps > 60) {
-        m_MaxIterations = 5;
+        m_MaxIterations = 12; // HIGH
         m_UseTextureGather = true;
-        std::cout << "[Auto-Tune] Setting: HIGH (5 iterations, textureGather)" << std::endl;
+        std::cout << "[Auto-Tune] Setting: HIGH (12 iterations, textureGather)" << std::endl;
     } else if (fps > 30) {
-        m_MaxIterations = 3;
+        m_MaxIterations = 8; // MEDIUM
         m_UseTextureGather = false;
-        std::cout << "[Auto-Tune] Setting: MEDIUM (3 iterations, textureLod)" << std::endl;
+        std::cout << "[Auto-Tune] Setting: MEDIUM (8 iterations, textureLod)" << std::endl;
     } else {
-        m_MaxIterations = 2;
+        m_MaxIterations = 5; // LOW
         m_UseTextureGather = false;
-        std::cout << "[Auto-Tune] Setting: LOW (2 iterations, textureLod)" << std::endl;
+        std::cout << "[Auto-Tune] Setting: LOW (5 iterations, textureLod)" << std::endl;
     }
     
     // Recompile shader with optimal settings
@@ -975,11 +1053,19 @@ void GPUPhysicsWorld::AutoTuneSettings() {
 }
 
 void GPUPhysicsWorld::SetQualityLevel(int iterations, bool useTextureGather) {
+    // Only recompile if settings actually changed
+    bool needsRecompile = (m_MaxIterations != iterations || m_UseTextureGather != useTextureGather);
+    
     m_MaxIterations = iterations;
     m_UseTextureGather = useTextureGather;
     m_ManualPresetSelected = true;  // Mark as manual selection
     m_AutoTuningEnabled = false;    // Disable auto-tune
-    LoadComputeShader();  // Recompile with new settings
+    
+    if (needsRecompile) {
+        std::cout << "[GPU] Recompiling shader with: iterations=" << m_MaxIterations 
+                  << ", textureGather=" << (useTextureGather ? "YES" : "NO") << std::endl;
+        LoadComputeShader();  // Recompile with new settings
+    }
 }
 
 } // namespace cloth

@@ -143,24 +143,19 @@ int main() {
     state.physicsWorld.SetTerrain(&state.world.GetTerrain());
 
     // Apply GPU-detected physics settings (from AppState)
+    // Note: Quality level already set in AppState::InitializeGL() before physicsWorld.Initialize()
     GPUPhysicsConfig gpuPhysicsConfig;
     gpuPhysicsConfig.gravity = glm::vec3(0.0f, -9.81f, 0.0f);
     gpuPhysicsConfig.damping = 0.98f;
-    gpuPhysicsConfig.iterations = state.gpuInfo.physicsIterations;
+    gpuPhysicsConfig.iterations = state.gpuInfo.physicsIterations;  // LOW=2, MEDIUM=3, HIGH=4, ULTRA=5
     gpuPhysicsConfig.collisionMargin = 0.05f;
     gpuPhysicsConfig.dampingFactor = 0.85f;
     gpuPhysicsConfig.frictionFactor = 0.92f;
     gpuPhysicsConfig.collisionSubsteps = state.gpuInfo.collisionSubsteps;
+    
+    // Update config (shader already compiled with correct iterations in InitializeGL)
     state.physicsWorld.SetConfig(gpuPhysicsConfig);
     state.physicsWorld.SetBatchCount(state.gpuInfo.batchCount);
-    
-    // Sync quality settings with physics world (if manual preset selected)
-    if (state.physicsWorld.IsManualPreset()) {
-        state.physicsWorld.SetQualityLevel(state.gpuInfo.physicsIterations, false);  // textureGather = false for Intel
-    }
-
-    std::cout << "[Physics] Applied GPU settings: iterations=" << state.gpuInfo.physicsIterations
-              << ", substeps=" << state.gpuInfo.collisionSubsteps << ", batches=" << state.gpuInfo.batchCount << std::endl;
 
     // Pre-load world textures
     state.world.LoadTextures();

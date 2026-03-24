@@ -157,25 +157,30 @@ public:
         }
     }
     
-    // Run quick benchmark to verify GPU capability
+    // Run benchmark to verify GPU capability and auto-detect preset
     static bool RunBenchmark(GPUInfo& info) {
-        std::cout << "\nRunning GPU benchmark..." << std::endl;
+        std::cout << "\n[GPU] Running Hardware-Accelerated Benchmark..." << std::endl;
         
-        // Simple benchmark: measure compute shader dispatch time
-        // This is a placeholder - full benchmark would be more comprehensive
+        GPUCaps caps = GPUBenchmark::RunBenchmark();
         
-        GLint major, minor;
-        glGetIntegerv(GL_MAJOR_VERSION, &major);
-        glGetIntegerv(GL_MINOR_VERSION, &minor);
+        // Advanced classification based on real performance
+        QualityPreset detected = QualityPreset::LOW;
         
-        if (major < 4 || (major == 4 && minor < 3)) {
-            std::cout << "WARNING: OpenGL version may not support all features!" << std::endl;
-            info.detectedPreset = QualityPreset::LOW;
-            return false;
+        if (caps.computeTFLOPS > 10.0f || caps.benchmarkScore > 8000) {
+            detected = QualityPreset::ULTRA; // High-end (RTX 3080+, RX 6800+)
+        } else if (caps.computeTFLOPS > 4.0f || caps.benchmarkScore > 5000) {
+            detected = QualityPreset::HIGH;  // Mid-range (RTX 3060, RX 6600)
+        } else if (caps.computeTFLOPS > 1.5f || caps.benchmarkScore > 2500) {
+            detected = QualityPreset::MEDIUM; // Entry-level (GTX 1650, RX 580)
+        } else {
+            detected = QualityPreset::LOW;    // Integrated or old
         }
         
-        std::cout << "OpenGL " << major << "." << minor << " - Full feature support confirmed" << std::endl;
-        std::cout << "Benchmark complete!" << std::endl;
+        // Update info with detected preset
+        info.detectedPreset = detected;
+        ApplyPresetSettings(info, detected);
+        
+        std::cout << "[GPU] Benchmark-based recommendation: " << GetPresetName(detected) << std::endl;
         
         return true;
     }
@@ -197,13 +202,13 @@ public:
         switch (preset) {
             case QualityPreset::LOW:
                 // Intel integrated GPU - conservative settings
-                info.physicsIterations = 2;
+                info.physicsIterations = 5;  // +2 (was 3) - more stable
                 info.collisionSubsteps = 1;
                 info.workGroupSize = 128;
                 info.batchCount = 4;  // Prevent TDR
-                info.clothResolution[0] = 30;  // +10 (was 20)
-                info.clothResolution[1] = 30;  // +10 (was 20)
-                info.clothResolution[2] = 30;  // +10 (was 20)
+                info.clothResolution[0] = 35;  // +5 (was 30)
+                info.clothResolution[1] = 35;  // +5 (was 30)
+                info.clothResolution[2] = 35;  // +5 (was 30)
                 // Reflection: HDR enabled, but lower resolution + LOD blur for performance
                 info.reflectionResolution = 256;
                 info.reflectionHDR = true;
@@ -213,7 +218,7 @@ public:
 
             case QualityPreset::MEDIUM:
                 // Entry-level dedicated GPU
-                info.physicsIterations = 3;
+                info.physicsIterations = 8;  // +4 (was 4) - tighter cloth
                 info.collisionSubsteps = 2;
                 info.workGroupSize = 192;
                 info.batchCount = 2;
@@ -229,7 +234,7 @@ public:
 
             case QualityPreset::HIGH:
                 // Mid-range dedicated GPU
-                info.physicsIterations = 4;
+                info.physicsIterations = 12;  // +7 (was 5) - even tighter
                 info.collisionSubsteps = 2;
                 info.workGroupSize = 256;
                 info.batchCount = 1;  // No batching needed
@@ -245,7 +250,7 @@ public:
 
             case QualityPreset::ULTRA:
                 // High-end GPU - MAX POWER!
-                info.physicsIterations = 5;
+                info.physicsIterations = 16;  // +10 (was 6) - maximum tightness
                 info.collisionSubsteps = 3;
                 info.workGroupSize = 256;
                 info.batchCount = 1;
