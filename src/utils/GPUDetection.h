@@ -201,15 +201,12 @@ public:
     static void ApplyPresetSettings(GPUInfo& info, QualityPreset preset) {
         switch (preset) {
             case QualityPreset::LOW:
-                // Intel integrated GPU - conservative settings
-                info.physicsIterations = 5;  // +2 (was 3) - more stable
-                info.collisionSubsteps = 1;
-                info.workGroupSize = 128;
-                info.batchCount = 4;  // Prevent TDR
-                info.clothResolution[0] = 35;  // +5 (was 30)
-                info.clothResolution[1] = 35;  // +5 (was 30)
-                info.clothResolution[2] = 35;  // +5 (was 30)
-                // Reflection: HDR enabled, but lower resolution + LOD blur for performance
+                // Intel integrated GPU - Upgraded to Professional Stability
+                info.physicsIterations = 20; // Increased
+                info.collisionSubsteps = 8;  // Doubled
+                info.clothResolution[0] = 55; 
+                info.clothResolution[1] = 55;
+                info.clothResolution[2] = 55;
                 info.reflectionResolution = 256;
                 info.reflectionHDR = true;
                 info.reflectionLOD = true;
@@ -217,15 +214,12 @@ public:
                 break;
 
             case QualityPreset::MEDIUM:
-                // Entry-level dedicated GPU
-                info.physicsIterations = 8;  // +4 (was 4) - tighter cloth
-                info.collisionSubsteps = 2;
-                info.workGroupSize = 192;
-                info.batchCount = 2;
-                info.clothResolution[0] = 55;  // +10 (was 45)
-                info.clothResolution[1] = 50;  // +10 (was 40)
-                info.clothResolution[2] = 50;  // +10 (was 40)
-                // Reflection: Good balance with HDR and LOD
+                // Entry-level dedicated GPU - High Performance Standard
+                info.physicsIterations = 25; // Increased
+                info.collisionSubsteps = 8;  
+                info.clothResolution[0] = 70;
+                info.clothResolution[1] = 70;
+                info.clothResolution[2] = 70;
                 info.reflectionResolution = 512;
                 info.reflectionHDR = true;
                 info.reflectionLOD = true;
@@ -233,15 +227,12 @@ public:
                 break;
 
             case QualityPreset::HIGH:
-                // Mid-range dedicated GPU
-                info.physicsIterations = 12;  // +7 (was 5) - even tighter
-                info.collisionSubsteps = 2;
-                info.workGroupSize = 256;
-                info.batchCount = 1;  // No batching needed
-                info.clothResolution[0] = 65;  // +10 (was 55)
-                info.clothResolution[1] = 60;  // +10 (was 50)
-                info.clothResolution[2] = 60;  // +10 (was 50)
-                // Reflection: High quality with HDR, no LOD blur
+                // Mid-range dedicated GPU - Professional Fidelity
+                info.physicsIterations = 40; // Increased
+                info.collisionSubsteps = 12; // Increased
+                info.clothResolution[0] = 85;
+                info.clothResolution[1] = 85;
+                info.clothResolution[2] = 85;
                 info.reflectionResolution = 512;
                 info.reflectionHDR = true;
                 info.reflectionLOD = false;
@@ -249,15 +240,12 @@ public:
                 break;
 
             case QualityPreset::ULTRA:
-                // High-end GPU - MAX POWER!
-                info.physicsIterations = 16;  // +10 (was 6) - maximum tightness
-                info.collisionSubsteps = 3;
-                info.workGroupSize = 256;
-                info.batchCount = 1;
-                info.clothResolution[0] = 70;  // +10 (was 60)
-                info.clothResolution[1] = 70;  // +10 (was 60)
-                info.clothResolution[2] = 70;  // +10 (was 60)
-                // Reflection: Maximum quality - 1024x1024, HDR, no LOD
+                // High-end GPU - Cinematic Simulation
+                info.physicsIterations = 60; // Increased
+                info.collisionSubsteps = 16; // Doubled from 8
+                info.clothResolution[0] = 110;
+                info.clothResolution[1] = 110;
+                info.clothResolution[2] = 110;
                 info.reflectionResolution = 1024;
                 info.reflectionHDR = true;
                 info.reflectionLOD = false;
@@ -265,9 +253,49 @@ public:
                 break;
 
             case QualityPreset::CUSTOM:
-                // Keep current values (from detection)
                 break;
         }
+        
+        // Rigorous hardware-level optimization
+        RigorousPerformanceTuning(info);
+    }
+    
+    // NEW: Advanced Hardware-Aware Performance Tuning
+    static void RigorousPerformanceTuning(GPUInfo& info) {
+        GLint maxInvocations;
+        glGetIntegerv(GL_MAX_COMPUTE_WORK_GROUP_INVOCATIONS, &maxInvocations);
+        
+        // 1. Adaptive WorkGroupSize Optimization
+        if (info.vendorType == GPUVendor::NVIDIA) {
+            // NVIDIA Maxwell/Pascal/Ampere/Ada architectures thrive on 256 or 512
+            info.workGroupSize = std::min<int>(maxInvocations, 512);
+        } else if (info.vendorType == GPUVendor::AMD) {
+            // AMD RDNA/GCN performs optimally with wave-64/256 patterns
+            info.workGroupSize = (maxInvocations >= 256) ? 256 : 128;
+        } else {
+            // Intel/Mobile: 128-256 is the sweet spot for occupancy
+            info.workGroupSize = std::min<int>(maxInvocations, 256);
+        }
+
+        // 2. Advanced TDR (Timeout) Mitigation Logic
+        // Calculate the total computational load per frame
+        long totalOps = static_cast<long>(info.physicsIterations) * info.collisionSubsteps;
+        
+        if (info.vendorType == GPUVendor::INTEL_INTEGRATED) {
+            // Intel GPUs share power/thermal with CPU, very sensitive to long kernels
+            info.batchCount = (totalOps > 100) ? 8 : (totalOps > 40 ? 4 : 2);
+        } else {
+            // Dedicated GPUs can handle longer kernels but batching helps frame pacing
+            info.batchCount = (totalOps > 200) ? 4 : (totalOps > 100 ? 2 : 1);
+        }
+
+        // 3. Substep Integrity Check
+        // Ensure we never have fewer than 2 substeps for multi-cloth simulation
+        info.collisionSubsteps = std::max<int>(info.collisionSubsteps, 2);
+        
+        std::cout << "[Tuning] Rigorous check: WorkGroupSize=" << info.workGroupSize 
+                  << ", Substeps=" << info.collisionSubsteps 
+                  << ", BatchCount=" << info.batchCount << std::endl;
     }
     
 private:

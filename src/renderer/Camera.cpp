@@ -8,8 +8,8 @@ Camera::Camera(ProjectionType type)
       m_Rotation(0.0f, 0.0f, 0.0f),
       m_ProjectionType(type),
       m_FOV(45.0f),
-      m_NearPlane(0.1f),
-      m_FarPlane(1000.0f),
+      m_NearPlane(0.05f),      // Tightened for better close-up precision
+      m_FarPlane(500.0f),      // Reduced to 500 to improve depth buffer distribution
       m_OrthoSize(10.0f) {
 }
 

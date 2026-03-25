@@ -264,7 +264,10 @@ void Render(AppState& state, const Application& app) {
 
         // Ensure correct render states BEFORE rendering cloths
         glEnable(GL_DEPTH_TEST);
-        glDepthFunc(GL_LESS);
+        glDepthFunc(GL_LEQUAL); 
+        glDepthMask(GL_TRUE); 
+        
+        // Disable back-face culling to make the cloth visible from both sides
         glDisable(GL_CULL_FACE);
 
         // Render each cloth
@@ -280,7 +283,9 @@ void Render(AppState& state, const Application& app) {
             }
         }
         
+        // Re-enable culling for subsequent draw calls
         glEnable(GL_CULL_FACE);
+        glCullFace(GL_BACK);
         state.clothShader.Unbind();
     }
 

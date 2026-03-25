@@ -17,11 +17,12 @@ namespace cloth {
  */
 struct alignas(16) ParticleData {
     glm::vec4 position;      // xyz = position, w = mass
-    glm::vec4 prevPosition;  // xyz = previous position, w = padding
+    glm::vec4 prevPosition;  // xyz = previous position, w = clothID (stored as int in float)
     glm::vec4 velocity;      // xyz = velocity, w = pinned (1.0 = pinned, 0.0 = free)
+    glm::vec4 padding;       // Extra alignment to maintain 64-byte size
 };
 
-static_assert(sizeof(ParticleData) == 48, "ParticleData must be 48 bytes");
+static_assert(sizeof(ParticleData) == 64, "ParticleData must be 64 bytes");
 
 /**
  * Manages particle data in a single interleaved GPU buffer (SSBO)

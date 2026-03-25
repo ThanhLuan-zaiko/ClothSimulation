@@ -21,10 +21,10 @@ struct GPUPhysicsConfig {
     glm::vec3 gravity = glm::vec3(0.0f, -9.81f, 0.0f);  // Normal gravity
     float damping = 0.95f;               // Slightly more damping (was 0.98)
     int iterations = 8;                  // Higher default (was 5)
-    float collisionMargin = 0.05f;
+    float collisionMargin = 0.02f;
     float dampingFactor = 0.85f;
     float frictionFactor = 0.92f;
-    int collisionSubsteps = 2;
+    int collisionSubsteps = 8;
     
     // NEW: Advanced physics parameters
     float gravityScale = 3.5f;           // Reduced (was 5.0)
@@ -33,8 +33,8 @@ struct GPUPhysicsConfig {
     glm::vec3 windDirection = glm::vec3(1.0f, 0.0f, 0.0f);  // Wind direction
     float stretchResistance = 0.8f;      // Increased (was 0.5)
     float maxVelocity = 35.0f;           // Reduced (was 40.0)
-    float selfCollisionRadius = 0.08f;   // Self-collision detection radius
-    float selfCollisionStrength = 0.35f; // Self-collision repulsion strength
+    float selfCollisionRadius = 0.25f;   // Increased to improve inter-cloth collision detection
+    float selfCollisionStrength = 1.20f; // Stronger repulsion for clear separation between cloths
     
     // Sphere friction parameters
     float sphereStaticFriction = 0.85f;    // Friction when nearly stopped
@@ -174,6 +174,10 @@ private:
     unsigned int m_ConstraintAdjacencyBuffer;  // (offset, count) for each particle
     unsigned int m_ConstraintIndicesBuffer;    // Flat array of constraint indices
 
+    // Spatial Hash Buffers (Inter-Cloth Collision)
+    unsigned int m_SpatialGridBuffer;
+    unsigned int m_SpatialNextBuffer;
+
     // Uniform buffer object
     unsigned int m_UniformBuffer;
     unsigned int m_CollisionUniformBuffer;
@@ -206,6 +210,7 @@ private:
     // Tracking
     size_t m_TotalParticles;
     size_t m_TotalConstraints;
+    unsigned int m_ClothCount;  // Unique ID for each cloth
     bool m_Initialized;
 
     // CPU-side copy of pinned flags (to avoid GPU read-back issues)

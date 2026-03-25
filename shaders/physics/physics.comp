@@ -14,8 +14,9 @@ layout(local_size_x = 128) in;
 
 struct ParticleDataType {
     vec4 position;      // xyz = position, w = mass
-    vec4 prevPosition;  // xyz = previous position, w = padding
+    vec4 prevPosition;  // xyz = previous position, w = clothID
     vec4 velocity;      // xyz = velocity, w = pinned
+    vec4 padding;
 };
 
 struct ConstraintDataType {
@@ -69,6 +70,24 @@ layout(std430, binding = 9) buffer ConstraintAdjacencySSBO {
 layout(std430, binding = 10) buffer ConstraintIndicesSSBO {
     int constraintIndices[];
 };
+
+// Spatial Hash Buffers
+layout(std430, binding = 11) buffer GridBufferSSBO {
+    uint gridHead[]; 
+};
+
+layout(std430, binding = 12) buffer NextBufferSSBO {
+    uint gridNext[]; 
+};
+
+const uint GRID_SIZE = 65536u;
+const uint GRID_MASK = GRID_SIZE - 1u;
+const float CELL_SIZE = 1.05f; // Increased to 1.05f to match max checkRad (3.0 * 0.35)
+
+uint hashPos(vec3 p) {
+    ivec3 cell = ivec3(floor(p / CELL_SIZE));
+    return (uint(cell.x) * 73856093u ^ uint(cell.y) * 19349663u ^ uint(cell.z) * 83492791u) & GRID_MASK;
+}
 
 // ============================================================================
 // UNIFORMS
@@ -129,8 +148,8 @@ uniform sampler2D terrainHeightmap;
 const int MAX_ITERATIONS = MAX_ITERATIONS_RUNTIME;
 const float EPSILON = 0.0001f;
 const int MAX_COLORS = 9;  // 9-color pattern for grid (handles bend constraints)
-const uint MAX_COLLISIONS = 4096u;
-const uint MAX_SELF_COLLISION_CHECKS = 16u;
+const uint MAX_COLLISIONS = 16384u;
+const uint MAX_SELF_COLLISION_CHECKS = 128u; // Increased from 64 to 128 for overlapping cloths
 const float FRICTION_COEFFICIENT = 0.95f;
 
 // Note: Physics parameters are now in Uniform Buffer for CPU control
@@ -227,7 +246,7 @@ void detectSelfCollision(uint globalIdx, uint localIdx, inout vec3 pos, inout ve
             // FIXED: Minimal repulsion - just prevent intersection, don't push apart
             float repulsionMag = (minDistSq - distSq) / minDistSq;
             repulsionMag = repulsionMag * repulsionMag;  // Quadratic
-            repulsionMag = min(repulsionMag, 1.0f) * repulsionStrength * 0.01f;  // VERY weak
+            repulsionMag = min(repulsionMag, 1.0f) * repulsionStrength * 0.05f;  // Increased strength
             
             totalRepulsion += repulsionDir * repulsionMag;
             totalRepulsionWeight += repulsionMag;
@@ -346,6 +365,7 @@ void solveConstraintsForColor(uint color, uint globalIdx) {
 void main() {
     uint globalIdx = gl_GlobalInvocationID.x;
     uint localIdx = gl_LocalInvocationID.x;
+    uint numThreads = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
 
     // === STAGE 0: Reset counters (first work group only) ===
     if (gl_WorkGroupID.x == 0u && gl_WorkGroupID.y == 0u && gl_WorkGroupID.z == 0u && localIdx == 0u) {
@@ -382,7 +402,7 @@ void main() {
 
             // === APPLY GRAVITY ===
             // Reduce gravity impact when iterations are low to prevent energy buildup
-            float iterFactor = clamp(float(MAX_ITERATIONS) / 8.0f, 0.4f, 1.0f);
+            float iterFactor = clamp(float(MAX_ITERATIONS) / 8.0f, 0.7f, 1.0f); // Increased min from 0.4 to 0.7
             float gravScale = gravityScale * iterFactor;
             vec3 acceleration = gravity * gravScale * deltaTime * deltaTime;
 
@@ -421,13 +441,14 @@ void main() {
             vec3 newPos = pos + velocity;
 
             sharedPositions[localIdx] = newPos;
-            particles[globalIdx].prevPosition = vec4(pos, 0.0f);
+            particles[globalIdx].prevPosition.xyz = pos; // Preserve clothID in w
         }
     }
 
     barrier();
 
     // === STAGE 2.5: Sync Verlet results to particles[] ===
+    // (Logic moved out of condition)
     if (globalIdx < numParticles) {
         float isPinned = pinnedFlags[globalIdx];
         if (isPinned < 0.5f) {
@@ -438,7 +459,7 @@ void main() {
     barrier();
 
     // === STAGE 2.7: STRAIN LIMITING (CRITICAL - prevent explosion) ===
-    // Directly limit strain on constraints BEFORE constraint solving
+    // (Logic moved out of condition)
     if (globalIdx < numParticles) {
         float isPinned = pinnedFlags[globalIdx];
         if (isPinned < 0.5f) {
@@ -508,6 +529,25 @@ void main() {
         }
     }
 
+    barrier();
+
+    // === STAGE 3.8: Reset Spatial Grid ===
+    for (uint i = globalIdx; i < GRID_SIZE; i += numThreads) {
+        gridHead[i] = 0xFFFFFFFF;
+    }
+    barrier();
+
+    // === STAGE 3.9: Populate Spatial Grid ===
+    if (globalIdx < uint(numParticles)) {
+        vec3 pos = sharedPositions[localIdx];
+        if (!isnan(pos.x) && !isinf(pos.x)) {
+            uint h = hashPos(pos);
+            uint oldHead = atomicExchange(gridHead[h], globalIdx);
+            gridNext[globalIdx] = oldHead;
+        } else {
+            gridNext[globalIdx] = 0xFFFFFFFF;
+        }
+    }
     barrier();
 
     // === STAGE 3: Constraint Solving Loop ===
@@ -590,8 +630,8 @@ void main() {
 
                     // FIXED: Adaptive normalization divisor based on iteration count
                     // Increased significantly for ULTRA to ensure stability
-                    float SOR = (MAX_ITERATIONS > 10) ? 0.70f : 0.90f; // Stronger under-relaxation for high iters
-                    float adaptiveDivisor = (MAX_ITERATIONS > 12) ? 1.25f : ((MAX_ITERATIONS > 8) ? 1.0f : 0.85f);
+                    float SOR = (MAX_ITERATIONS > 10) ? 0.70f : 1.2f; // Increased SOR for low iterations (was 0.90f)
+                    float adaptiveDivisor = (MAX_ITERATIONS > 12) ? 1.25f : ((MAX_ITERATIONS > 8) ? 1.0f : 0.6f); // Reduced divisor for low iterations (was 0.85f)
                     
                     if (structuralWeight > 0.0f) {
                         myPos += (structuralCorr / max(1.0f, structuralWeight * adaptiveDivisor)) * SOR;
@@ -601,7 +641,51 @@ void main() {
                     }
                 }
 
-                // --- Part B: Environment Collision ---
+                // --- Part B: Inter-Cloth Hard Collision (GEOMETRIC CONSTRAINT) ---
+                // Treat different cloths as solid obstacles to each other
+                ivec3 centerCell = ivec3(floor(myPos / CELL_SIZE));
+                vec3 collisionCorrection = vec3(0.0f);
+                float collisionWeight = 0.0f;
+                int myID = int(particles[globalIdx].prevPosition.w);
+                
+                // Limited 3x3x3 search inside loop for performance
+                for (int z = -1; z <= 1; z++) {
+                    for (int y = -1; y <= 1; y++) {
+                        for (int x = -1; x <= 1; x++) {
+                            ivec3 neighborCell = centerCell + ivec3(x, y, z);
+                            uint h = (uint(neighborCell.x) * 73856093u ^ uint(neighborCell.y) * 19349663u ^ uint(neighborCell.z) * 83492791u) & GRID_MASK;
+                            uint currIdx = gridHead[h];
+                            
+                            int safety = 0;
+                            while (currIdx != 0xFFFFFFFF && safety < 32) {
+                                if (currIdx != globalIdx) {
+                                    int otherID = int(particles[currIdx].prevPosition.w);
+                                    if (myID != otherID) { // ONLY different cloths
+                                        vec3 otherPos = particles[currIdx].position.xyz;
+                                        float checkRad = selfCollisionRadius * 1.2f; 
+                                        vec3 delta = myPos - otherPos;
+                                        float distSq = dot(delta, delta);
+                                        
+                                        if (distSq < checkRad * checkRad && distSq > EPSILON * EPSILON) {
+                                            float dist = sqrt(distSq);
+                                            float penetration = checkRad - dist;
+                                            collisionCorrection += (delta / dist) * penetration;
+                                            collisionWeight += 1.0f;
+                                        }
+                                    }
+                                }
+                                currIdx = gridNext[currIdx];
+                                safety++;
+                            }
+                        }
+                    }
+                }
+                
+                if (collisionWeight > 0.0f) {
+                    myPos += (collisionCorrection / collisionWeight) * 0.9f; // Stronger geometric correction
+                }
+
+                // --- Part C: Environment Collision ---
                 if (sphereRadius > 0.0f) {
                     vec3 toSphere = myPos - sphereCenter;
                     float dist = length(toSphere);
@@ -666,21 +750,190 @@ void main() {
 
     barrier();
 
-    // === STAGE 4: Self-Collision Detection ===
-    if (globalIdx < numParticles) {
+    // === STAGE 3.8: Reset Spatial Grid ===
+    // Use stride loop to clear grid using ALL dispatched threads
+    for (uint i = globalIdx; i < GRID_SIZE; i += numThreads) {
+        gridHead[i] = 0xFFFFFFFF;
+    }
+    barrier();
+
+    // === STAGE 3.9: Populate Spatial Grid ===
+    if (globalIdx < uint(numParticles)) {
+        vec3 pos = sharedPositions[localIdx];
+        
+        // Safety: don't populate grid with NaNs
+        if (!isnan(pos.x) && !isinf(pos.x)) {
+            uint h = hashPos(pos);
+            uint oldHead = atomicExchange(gridHead[h], globalIdx);
+            gridNext[globalIdx] = oldHead;
+        } else {
+            gridNext[globalIdx] = 0xFFFFFFFF;
+        }
+    }
+    barrier();
+
+    // === STAGE 4: Grid-Based Collision Detection ===
+    if (globalIdx < uint(numParticles)) {
         float isPinned = pinnedFlags[globalIdx];
-        if (isPinned < 0.5f) {
+        if (isPinned < 0.5f) { // Only move if not pinned
             vec3 pos = sharedPositions[localIdx];
             ParticleDataType particle = particles[globalIdx];
             vec3 velocity = (pos - particle.prevPosition.xyz) / deltaTime;
             
-            // Pass localIdx for shared memory access
-            detectSelfCollision(globalIdx, localIdx, pos, velocity);
+            // Grid Collision
+            vec3 totalRepulsion = vec3(0.0f);
+            float totalRepulsionWeight = 0.0f;
             
+            // HARD CORRECTION VARIABLES
+            vec3 hardCorrectionDir = vec3(0.0f);
+            float maxPenetrationDepth = 0.0f;
+            
+            ivec3 centerCell = ivec3(floor(pos / CELL_SIZE));
+            
+            // Check 3x3x3 neighbors
+            for (int z = -1; z <= 1; z++) {
+                for (int y = -1; y <= 1; y++) {
+                    for (int x = -1; x <= 1; x++) {
+                        ivec3 neighborCell = centerCell + ivec3(x, y, z);
+                        uint h = (uint(neighborCell.x) * 73856093u ^ uint(neighborCell.y) * 19349663u ^ uint(neighborCell.z) * 83492791u) & GRID_MASK;
+                        
+                        uint currIdx = gridHead[h];
+                        int safetyCount = 0;
+                        
+                        while (currIdx != 0xFFFFFFFF && safetyCount < 256) { // Safety break
+                            if (currIdx != globalIdx) {
+                                // Retrieve other position from GLOBAL memory (all cloths)
+                                vec3 otherPos = particles[currIdx].position.xyz;
+                                
+                                float distSq = distanceSquared(pos, otherPos);
+                                float checkRad = selfCollisionRadius; 
+                                
+                                // Increase detection radius for inter-cloth collisions to prevent tunneling
+                                int myID = int(particles[globalIdx].prevPosition.w);
+                                int otherID = int(particles[currIdx].prevPosition.w);
+                                if (myID != otherID) {
+                                    checkRad *= 3.0f; // Increased from 2.0 to 3.0 (0.75m)
+                                }
+
+                                // Increase detection radius for inter-cloth
+                                if (distSq < checkRad * checkRad && distSq > EPSILON * EPSILON) {
+                                    float dist = sqrt(distSq);
+                                    vec3 dir = (pos - otherPos) / dist;
+                                    float penetration = checkRad - dist;
+
+                                    // Stronger repulsion for cross-cloth collisions
+                                    float force = penetration * selfCollisionStrength * 160.0f; // Increased from 80.0 to 160.0 
+                                    totalRepulsion += dir * force;
+                                    totalRepulsionWeight += 1.0f;
+                                    
+                                    if (penetration > maxPenetrationDepth) {
+                                        maxPenetrationDepth = penetration;
+                                        hardCorrectionDir = dir;
+                                    }
+                                }
+                            }
+                            currIdx = gridNext[currIdx];
+                            safetyCount++;
+                        }
+                    }
+                }
+            }
+            
+            // Apply Soft Repulsion (Momentum based)
+            if (totalRepulsionWeight > 0.0f) {
+                vec3 repulsion = totalRepulsion / max(1.0f, totalRepulsionWeight);
+                float maxMove = CELL_SIZE * 0.45f;
+                float moveLen = length(repulsion);
+                if (moveLen > maxMove) repulsion = (repulsion / moveLen) * maxMove;
+                
+                pos += repulsion;
+                velocity *= 0.92f; 
+            }
+            
+            // === APPLY HARD GEOMETRIC CORRECTION (The "Strict" Logic) ===
+            // If still penetrating after soft repulsion, force it out physically
+            if (maxPenetrationDepth > 0.0f) {
+                // Move 50% of the penetration depth immediately (reduced from 80% to prevent jitter/jumps)
+                vec3 hardMove = hardCorrectionDir * (maxPenetrationDepth * 0.5f);
+                
+                // Clamp hard move to avoid explosions
+                float hardMoveLimit = CELL_SIZE * 0.3f;
+                if (length(hardMove) > hardMoveLimit) {
+                    hardMove = normalize(hardMove) * hardMoveLimit;
+                }
+                
+                pos += hardMove;
+                
+                // KILL velocity in the direction of collision (stop bouncing)
+                float vDot = dot(velocity, hardCorrectionDir);
+                if (vDot < 0.0f) {
+                    velocity -= hardCorrectionDir * vDot; // Project velocity onto collision plane
+                }
+            }
+            
+            // Final NaN/Inf safety check
+            if (isnan(pos.x) || isinf(pos.x)) {
+                pos = particles[globalIdx].position.xyz; // Revert to Stage 3 position
+            }
+
             // Update both shared and global memory
             sharedPositions[localIdx] = pos;
             particles[globalIdx].position.xyz = pos;
             particles[globalIdx].prevPosition.xyz = pos - velocity * deltaTime;
+        }
+    }
+
+    barrier();
+
+    // === STAGE 4.2: FINAL HARD RESOLUTION PASS (CRITICAL) ===
+    // One last check to force particles out of each other before final update
+    if (globalIdx < uint(numParticles)) {
+        float isPinned = pinnedFlags[globalIdx];
+        if (isPinned < 0.5f) {
+            vec3 pos = sharedPositions[localIdx];
+            vec3 totalCorrection = vec3(0.0f);
+            float correctionWeight = 0.0f;
+            
+            ivec3 centerCell = ivec3(floor(pos / CELL_SIZE));
+            int myID = int(particles[globalIdx].prevPosition.w);
+            
+            for (int z = -1; z <= 1; z++) {
+                for (int y = -1; y <= 1; y++) {
+                    for (int x = -1; x <= 1; x++) {
+                        ivec3 neighborCell = centerCell + ivec3(x, y, z);
+                        uint h = (uint(neighborCell.x) * 73856093u ^ uint(neighborCell.y) * 19349663u ^ uint(neighborCell.z) * 83492791u) & GRID_MASK;
+                        uint currIdx = gridHead[h];
+                        
+                        int safety = 0;
+                        while (currIdx != 0xFFFFFFFF && safety < 128) {
+                            if (currIdx != globalIdx) {
+                                int otherID = int(particles[currIdx].prevPosition.w);
+                                if (myID != otherID) { // Only check OTHER cloths
+                                    vec3 otherPos = particles[currIdx].position.xyz;
+                                    float checkRad = selfCollisionRadius * 1.5f; // Hard limit radius
+                                    float distSq = distanceSquared(pos, otherPos);
+                                    
+                                    if (distSq < checkRad * checkRad && distSq > EPSILON * EPSILON) {
+                                        float dist = sqrt(distSq);
+                                        float penetration = checkRad - dist;
+                                        totalCorrection += ((pos - otherPos) / dist) * penetration;
+                                        correctionWeight += 1.0f;
+                                    }
+                                }
+                            }
+                            currIdx = gridNext[currIdx];
+                            safety++;
+                        }
+                    }
+                }
+            }
+            
+            if (correctionWeight > 0.0f) {
+                // Apply 90% of the correction immediately
+                pos += (totalCorrection / correctionWeight) * 0.9f;
+                sharedPositions[localIdx] = pos;
+                particles[globalIdx].position.xyz = pos;
+            }
         }
     }
 
@@ -840,7 +1093,7 @@ void main() {
                 velocity *= 0.95f;
 
                 // Update previous position for next frame's Verlet
-                particles[globalIdx].prevPosition = vec4(pos - velocity, 0.0f);
+                particles[globalIdx].prevPosition.xyz = pos - velocity;
             }
         }
     }

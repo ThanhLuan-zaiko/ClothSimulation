@@ -190,11 +190,19 @@ struct AppState {
         GPUPhysicsConfig config;
         config.gravity = glm::vec3(0.0f, -9.81f, 0.0f);
         config.damping = 0.99f;
-        config.iterations = gpuInfo.physicsIterations;  // ← Use GPU-detected iterations (LOW=2, MEDIUM=3, HIGH=4, ULTRA=5)
+        config.iterations = gpuInfo.physicsIterations;
         config.collisionMargin = 0.05f;
         config.dampingFactor = 0.95f;
         config.frictionFactor = 0.98f;
         config.collisionSubsteps = gpuInfo.collisionSubsteps;
+        
+        // INTER-CLOTH COLLISION SETTINGS (More robust)
+        config.selfCollisionRadius = 0.35f;   // Increased cushion (35cm)
+        config.selfCollisionStrength = 2.0f;  // Stronger repulsion
+        
+        // STABILITY SETTINGS
+        config.gravityScale = 3.0f;           // Slightly reduced for better stability
+        config.airResistance = 0.990f;        // Slightly more resistance to prevent over-acceleration
         
         // CRITICAL: Set quality level BEFORE Initialize() so shader compiles with correct iterations
         bool useTextureGather = (selectedPreset == QualityPreset::HIGH || 

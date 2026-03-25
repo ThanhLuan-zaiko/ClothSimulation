@@ -23,6 +23,8 @@ GPUPhysicsWorld::GPUPhysicsWorld()
       m_ColorCollisionCountBuffer(0),
       m_ConstraintAdjacencyBuffer(0),
       m_ConstraintIndicesBuffer(0),
+      m_SpatialGridBuffer(0),
+      m_SpatialNextBuffer(0),
       m_ShaderLoaded(false),
       m_ShaderValidated(false),
       m_IsHighEndGPU(false),
@@ -39,6 +41,7 @@ GPUPhysicsWorld::GPUPhysicsWorld()
       m_ManualPresetSelected(false),
       m_TotalParticles(0),
       m_TotalConstraints(0),
+      m_ClothCount(0),
       m_Initialized(false) {
 }
 
@@ -149,10 +152,10 @@ bool GPUPhysicsWorld::Initialize(const GPUPhysicsConfig& config) {
     glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(unsigned int), &initialCollisionCount, GL_DYNAMIC_COPY);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
     
-    // Collision data buffer (max 10000 collisions)
+    // Collision data buffer (max 16384 collisions)
     glGenBuffers(1, &m_CollisionDataBuffer);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_CollisionDataBuffer);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, 10000 * sizeof(unsigned int), nullptr, GL_DYNAMIC_COPY);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, 16384 * sizeof(unsigned int), nullptr, GL_DYNAMIC_COPY);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
     
     // Initialize graph coloring buffers
@@ -293,6 +296,10 @@ size_t GPUPhysicsWorld::InitializeCloth(int widthSegments, int heightSegments,
     size_t particleOffset = m_TotalParticles;
     size_t constraintOffset = m_TotalConstraints;
 
+    // Assign unique ID to this cloth for inter-cloth collision detection
+    unsigned int clothID = m_ClothCount++;
+    std::cout << "[GPU] Initializing cloth " << clothID << " at offset " << particleOffset << std::endl;
+
     // Create particles using new interleaved ParticleData structure
     std::vector<ParticleData> particles(numParticles);
     for (int y = 0; y <= heightSegments; y++) {
@@ -304,7 +311,8 @@ size_t GPUPhysicsWorld::InitializeCloth(int widthSegments, int heightSegments,
                 startZ + y * segmentLength,
                 1.0f  // mass
             );
-            particles[idx].prevPosition = particles[idx].position;
+            // Store clothID in prevPosition.w for inter-cloth collision detection in shader
+            particles[idx].prevPosition = glm::vec4(glm::vec3(particles[idx].position), (float)clothID);
             particles[idx].velocity = glm::vec4(0.0f, 0.0f, 0.0f, pinned ? 1.0f : 0.0f);
         }
     }
@@ -418,22 +426,6 @@ size_t GPUPhysicsWorld::InitializeCloth(int widthSegments, int heightSegments,
     // Upload to GPU - PRE-ALLOCATE large buffer for all 3 cloths
     if (m_TotalParticles == 0) {
         // First cloth - allocate maximum buffer size upfront
-        std::vector<ParticleData> particles(numParticles);
-
-        for (int y = 0; y <= heightSegments; y++) {
-            for (int x = 0; x <= widthSegments; x++) {
-                int idx = y * (widthSegments + 1) + x;
-                particles[idx].position = glm::vec4(
-                    startX + x * segmentLength,
-                    startY,
-                    startZ + y * segmentLength,
-                    1.0f  // mass
-                );
-                particles[idx].prevPosition = particles[idx].position;
-                particles[idx].velocity = glm::vec4(0.0f, 0.0f, 0.0f, pinned ? 1.0f : 0.0f);
-            }
-        }
-
         // Allocate MAX buffer size upfront
         m_ParticleBuffer.Initialize(MAX_PARTICLES);
         m_ParticleBuffer.UploadSubset(0, particles.size(), particles);
@@ -516,14 +508,21 @@ size_t GPUPhysicsWorld::InitializeCloth(int widthSegments, int heightSegments,
 
         m_TotalParticles = newTotalParticles;
         m_TotalConstraints = newTotalConstraints;
+
+        // Force synchronization to ensure all cloth data is uploaded before simulation
+        glMemoryBarrier(GL_CLIENT_MAPPED_BUFFER_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+        glFinish();
+
+        // Build constraint adjacency list for optimized constraint solving
+        BuildConstraintAdjacencyList();
+
+        // Ensure adjacency data is also synchronized
+        glMemoryBarrier(GL_CLIENT_MAPPED_BUFFER_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+        glFinish();
+
+        return particleOffset;
     }
-
-    // Build constraint adjacency list for optimized constraint solving
-    BuildConstraintAdjacencyList();
-
-    return particleOffset;
 }
-
 void GPUPhysicsWorld::SetParticlesPinned(size_t startIdx, size_t count, bool pinned) {
     // Use CPU copy directly (no GPU read-back needed)
     if (m_PinnedFlagsCPU.empty() || m_PinnedFlagsCPU.size() < m_TotalParticles) {
@@ -646,16 +645,6 @@ void GPUPhysicsWorld::Update(float deltaTime) {
         glBindBufferBase(GL_UNIFORM_BUFFER, 3, m_CollisionUniformBuffer);
     }
 
-    // Reset collision count at start of frame
-    unsigned int zeroCount = 0;
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_CollisionCountBuffer);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(unsigned int), &zeroCount);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-
-    // CRITICAL: Memory barrier BEFORE dispatch to ensure compute shader sees
-    // the latest particle data (especially velocity.w for pinned state)
-    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_UNIFORM_BARRIER_BIT);
-
     // Calculate work groups
     unsigned int totalWorkGroups = static_cast<unsigned int>((m_TotalParticles + m_WorkGroupSize - 1) / m_WorkGroupSize);
 
@@ -668,23 +657,44 @@ void GPUPhysicsWorld::Update(float deltaTime) {
         return;
     }
 
-    // === DISPATCH COMPUTE SHADER ===
-    glDispatchCompute(totalWorkGroups, 1, 1);
+    // === SUBSTEP LOOP ===
+    int substeps = m_Config.collisionSubsteps;
+    if (substeps < 1) substeps = 1;
+    float subDeltaTime = deltaTime / substeps;
 
-    // Check for dispatch errors
-    GLenum err = glGetError();
-    if (err != GL_NO_ERROR) {
-        std::cerr << "[GPUPhysicsWorld] glDispatchCompute ERROR: " << err << std::endl;
-        m_ParticleBuffer.Unbind();
-        m_ConstraintBuffer.Unbind();
-        m_ComputeShader.Unbind();
-        return;
+    for (int s = 0; s < substeps; s++) {
+        // Update uniforms with current subDeltaTime
+        UpdateUniforms(subDeltaTime);
+
+        // Bind compute shader
+        m_ComputeShader.Bind();
+
+        // Clear collision count at start of each substep
+        unsigned int zeroCount = 0;
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_CollisionCountBuffer);
+        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(unsigned int), &zeroCount);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+        // Memory barrier to ensure previous substep is visible
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_UNIFORM_BARRIER_BIT);
+
+        // === DISPATCH COMPUTE SHADER ===
+        glDispatchCompute(totalWorkGroups, 1, 1);
+
+        // Check for dispatch errors
+        if (s == 0) {
+            GLenum err = glGetError();
+            if (err != GL_NO_ERROR) {
+                std::cerr << "[GPUPhysicsWorld] glDispatchCompute ERROR: " << err << std::endl;
+                break;
+            }
+        }
+
+        // Memory barrier between substeps
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
     }
 
-    // Memory barrier to ensure rendering sees updated data
-    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-
-    // Wait for GPU completion to ensure physics sync
+    // Wait for GPU completion to ensure physics sync before rendering
     glFinish();
 
     // Swap double buffers for next frame
@@ -721,40 +731,40 @@ void GPUPhysicsWorld::UpdateUniforms(float deltaTime) {
     
     glBindBuffer(GL_UNIFORM_BUFFER, m_UniformBuffer);
 
-    float physicsData[32]; // 8 vec4s = 128 bytes
+    float physicsData[24]; // 6 vec4s = 96 bytes
     int idx = 0;
     
-    // vec4: gravity
+    // vec4: gravity_dt (xyz = gravity, w = deltaTime)
     physicsData[idx++] = m_Config.gravity.x;
     physicsData[idx++] = m_Config.gravity.y;
     physicsData[idx++] = m_Config.gravity.z;
     physicsData[idx++] = deltaTime;
 
-    // vec4: damping, numParticles, numConstraints, restLength
+    // vec4: params1 (x = damping, y = numParticles, z = numConstraints, w = restLength)
     physicsData[idx++] = m_Config.damping;
     physicsData[idx++] = static_cast<float>(m_TotalParticles);
     physicsData[idx++] = static_cast<float>(m_TotalConstraints);
-    physicsData[idx++] = 0.0f; // restLength (unused)
+    physicsData[idx++] = 0.0f; // restLength
 
-    // vec4: terrainSize (vec2) + terrainHeightScale + gravityScale
+    // vec4: terrain (xy = terrainSize, z = terrainHeightScale, w = gravityScale)
     physicsData[idx++] = 100.0f; // terrainSize.x
     physicsData[idx++] = 100.0f; // terrainSize.y
     physicsData[idx++] = 1.0f;   // terrainHeightScale
     physicsData[idx++] = m_Config.gravityScale;
 
-    // vec4: airResistance, windStrength, pad, pad
+    // vec4: forces (x = airResistance, y = windStrength, zw = padding)
     physicsData[idx++] = m_Config.airResistance;
     physicsData[idx++] = m_Config.windStrength;
     physicsData[idx++] = 0.0f; // padding
     physicsData[idx++] = 0.0f; // padding
 
-    // vec4: windDirection (vec3) + stretchResistance
+    // vec4: windDir_stretch (xyz = windDirection, w = stretchResistance)
     physicsData[idx++] = m_Config.windDirection.x;
     physicsData[idx++] = m_Config.windDirection.y;
     physicsData[idx++] = m_Config.windDirection.z;
     physicsData[idx++] = m_Config.stretchResistance;
 
-    // vec4: maxVelocity, selfCollisionRadius, selfCollisionStrength, pad
+    // vec4: limits (x = maxVelocity, y = selfCollisionRadius, z = selfCollisionStrength, w = padding)
     physicsData[idx++] = m_Config.maxVelocity;
     physicsData[idx++] = m_Config.selfCollisionRadius;
     physicsData[idx++] = m_Config.selfCollisionStrength;
