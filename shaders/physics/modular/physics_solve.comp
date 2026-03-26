@@ -1,0 +1,41 @@
+#include "physics_common.glsl"
+
+uniform int current_color;
+
+void main() {
+    uint globalIdx = gl_GlobalInvocationID.x;
+    if (globalIdx >= uint(numParticles)) return;
+
+    // Graph Coloring: Only process particles matching the current color pass
+    if (particleColors[globalIdx] != uint(current_color)) return;
+
+    // Pinned particles do not move during solver pass
+    if (pinnedFlags[globalIdx] >= 0.5f) return;
+
+    vec3 myPos = positions[globalIdx].xyz;
+    ivec2 range = particleConstraints[globalIdx];
+    
+    for (int i = 0; i < range.y; i++) {
+        int cIdx = constraintIndices[range.x + i];
+        ConstraintDataType c = constraints[cIdx];
+        
+        int otherIdx = (c.indices.x == int(globalIdx)) ? c.indices.y : c.indices.x;
+        vec3 otherPos = positions[otherIdx].xyz;
+        vec3 delta = otherPos - myPos;
+        float dist = length(delta);
+        
+        if (dist > EPSILON) {
+            float restLen = c.params.x;
+            float stiffness = c.params.y;
+            
+            float diff = (dist - restLen) / dist;
+            
+            // Adjust position towards constraint goal
+            // We use 0.5 because we assume both particles are non-pinned and have same mass
+            // In a better solver, we'd account for mass and other particle's pinned status
+            myPos += delta * (diff * stiffness * 0.5f);
+        }
+    }
+    
+    positions[globalIdx].xyz = myPos;
+}

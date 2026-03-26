@@ -22,7 +22,8 @@ public:
     void DrawWireframe(const Shader& shader);
 
     // GPU-specific methods
-    void SetParticleBuffer(const ParticleBuffer* buffer, size_t offset = 0);
+    void SetParticleBufferID(unsigned int bufferID);
+    void SetParticleOffset(size_t offset) { m_ParticleOffset = offset; }
     void UpdateGPUVAO();  // Update GPU VAO after buffer resize
     void BindForGPURendering() const;
     void Unbind() const;
@@ -52,7 +53,7 @@ private:
     bool m_GPUBased;  // If true, reads from GPU buffer
 
     // GPU buffer reference
-    const ParticleBuffer* m_ParticleBuffer;
+    unsigned int m_PosBufferID;
     size_t m_ParticleOffset;
     unsigned int m_LastKnownBufferID;  // Track buffer ID to detect changes
 

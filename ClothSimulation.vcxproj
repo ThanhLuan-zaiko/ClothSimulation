@@ -219,7 +219,11 @@
     <None Include="shaders\basic\basic.frag" />
     <None Include="shaders\sphere\sphere.vert" />
     <None Include="shaders\sphere\sphere.frag" />
-    <None Include="shaders\physics\physics.comp" />
+    <None Include="shaders\physics\modular\physics_common.glsl" />
+    <None Include="shaders\physics\modular\physics_integrate.comp" />
+    <None Include="shaders\physics\modular\physics_solve.comp" />
+    <None Include="shaders\physics\modular\physics_collide.comp" />
+    <None Include="shaders\physics\modular\physics_clear_grid.comp" />
   </ItemGroup>
 
   <!-- Copy shaders to output directory -->
@@ -228,7 +232,7 @@
     <MakeDir Directories="$(OutDir)shaders\cloth" />
     <MakeDir Directories="$(OutDir)shaders\basic" />
     <MakeDir Directories="$(OutDir)shaders\sphere" />
-    <MakeDir Directories="$(OutDir)shaders\physics" />
+    <MakeDir Directories="$(OutDir)shaders\physics\modular" />
     <Copy SourceFiles="$(ProjectDir)shaders\terrain\terrain.vert" DestinationFiles="$(OutDir)shaders\terrain\terrain.vert" />
     <Copy SourceFiles="$(ProjectDir)shaders\terrain\terrain.frag" DestinationFiles="$(OutDir)shaders\terrain\terrain.frag" />
     <Copy SourceFiles="$(ProjectDir)shaders\terrain\terrain_test.frag" DestinationFiles="$(OutDir)shaders\terrain\terrain_test.frag" />
@@ -238,7 +242,11 @@
     <Copy SourceFiles="$(ProjectDir)shaders\basic\basic.frag" DestinationFiles="$(OutDir)shaders\basic\basic.frag" />
     <Copy SourceFiles="$(ProjectDir)shaders\sphere\sphere.vert" DestinationFiles="$(OutDir)shaders\sphere\sphere.vert" />
     <Copy SourceFiles="$(ProjectDir)shaders\sphere\sphere.frag" DestinationFiles="$(OutDir)shaders\sphere\sphere.frag" />
-    <Copy SourceFiles="$(ProjectDir)shaders\physics\physics.comp" DestinationFiles="$(OutDir)shaders\physics\physics.comp" />
+    <Copy SourceFiles="$(ProjectDir)shaders\physics\modular\physics_common.glsl" DestinationFiles="$(OutDir)shaders\physics\modular\physics_common.glsl" />
+    <Copy SourceFiles="$(ProjectDir)shaders\physics\modular\physics_integrate.comp" DestinationFiles="$(OutDir)shaders\physics\modular\physics_integrate.comp" />
+    <Copy SourceFiles="$(ProjectDir)shaders\physics\modular\physics_solve.comp" DestinationFiles="$(OutDir)shaders\physics\modular\physics_solve.comp" />
+    <Copy SourceFiles="$(ProjectDir)shaders\physics\modular\physics_collide.comp" DestinationFiles="$(OutDir)shaders\physics\modular\physics_collide.comp" />
+    <Copy SourceFiles="$(ProjectDir)shaders\physics\modular\physics_clear_grid.comp" DestinationFiles="$(OutDir)shaders\physics\modular\physics_clear_grid.comp" />
   </Target>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

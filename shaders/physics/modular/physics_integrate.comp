@@ -1,0 +1,56 @@
+#include "physics_common.glsl"
+
+void main() {
+    uint globalIdx = gl_GlobalInvocationID.x;
+    uint localIdx = gl_LocalInvocationID.x;
+    uint numThreads = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
+
+    // Cache position to shared memory
+    if (globalIdx < uint(numParticles)) {
+        sharedPositions[localIdx] = positions[globalIdx].xyz;
+    } else {
+        sharedPositions[localIdx] = vec3(0.0f);
+    }
+    barrier();
+
+    // Verlet Integration
+    if (globalIdx < uint(numParticles)) {
+        if (pinnedFlags[globalIdx] < 0.5f) {
+            vec3 pos = sharedPositions[localIdx];
+            vec3 prevPos = prevPositions[globalIdx].xyz;
+            
+            // Calculate velocity from position delta
+            vec3 velocity = (pos - prevPos) * airResistance;
+
+            // Apply gravity and other forces
+            float iterFactor = clamp(float(MAX_ITERATIONS) / 8.0f, 0.7f, 1.0f);
+            vec3 acceleration = gravity * (gravityScale * iterFactor);
+            
+            vec3 nextPos = pos + velocity + acceleration * deltaTime * deltaTime;
+
+            // Speed limit
+            vec3 actualVel = (nextPos - pos) / deltaTime;
+            if (length(actualVel) > maxVelocity) {
+                nextPos = pos + normalize(actualVel) * maxVelocity * deltaTime;
+            }
+
+            // Update positions
+            prevPositions[globalIdx].xyz = pos;
+            positions[globalIdx].xyz = nextPos;
+            sharedPositions[localIdx] = nextPos;
+        }
+    }
+    barrier();
+
+    // Grid population
+    if (globalIdx < uint(numParticles)) {
+        vec3 pos = sharedPositions[localIdx];
+        if (!isnan(pos.x)) {
+            uint h = hashPos(pos);
+            uint oldHead = atomicExchange(gridHead[h], globalIdx);
+            gridNext[globalIdx] = oldHead;
+        } else {
+            gridNext[globalIdx] = 0xFFFFFFFF;
+        }
+    }
+}

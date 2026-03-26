@@ -34,6 +34,20 @@ public:
     float GetTextureTiling() const { return m_TextureTiling; }
     void SetTextureTiling(float tiling) { m_TextureTiling = tiling; }
 
+    float GetWidth() const { return m_Width; }
+    float GetDepth() const { return m_Depth; }
+    int GetSegments() const { return m_Segments; }
+    glm::vec2 GetSize() const { return glm::vec2(m_Width, m_Depth); }
+
+    std::vector<float> GetHeightData() const {
+        std::vector<float> data;
+        data.reserve(m_Vertices.size());
+        for (const auto& v : m_Vertices) {
+            data.push_back(v.position.y);
+        }
+        return data;
+    }
+
     // Heightmap controls
     void SetHeightScale(float scale) { m_HeightScale = scale; RegenerateMesh(); }
     float GetHeightScale() const { return m_HeightScale; }

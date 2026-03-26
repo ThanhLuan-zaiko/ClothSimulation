@@ -2,6 +2,7 @@
 #include "utils/GPUDetection.h"
 #include "cloth/Cloth.h"
 #include <glad/glad.h>
+#include <GLFW/glfw3.h>
 #include <iostream>
 #include <vector>
 #include <cmath>
@@ -14,1068 +15,473 @@
 namespace cloth {
 
 GPUPhysicsWorld::GPUPhysicsWorld()
-    : m_UniformBuffer(0),
-      m_CollisionUniformBuffer(0),
-      m_PinnedFlagsBuffer(0),
-      m_CollisionCountBuffer(0),
-      m_CollisionDataBuffer(0),
-      m_ParticleColorsBuffer(0),
-      m_ColorCollisionCountBuffer(0),
-      m_ConstraintAdjacencyBuffer(0),
-      m_ConstraintIndicesBuffer(0),
-      m_SpatialGridBuffer(0),
-      m_SpatialNextBuffer(0),
-      m_ShaderLoaded(false),
-      m_ShaderValidated(false),
+    : m_ShadersLoaded(false),
       m_IsHighEndGPU(false),
       m_IsIntelGPU(false),
       m_Terrain(nullptr),
       m_TerrainHeightmapTexture(0),
+      m_PosBuffer(0),
+      m_PrevPosBuffer(0),
+      m_VelBuffer(0),
+      m_ConstraintBuffer(0),
+      m_ParticleColorsBuffer(0),
+      m_PinnedFlagsBuffer(0),
+      m_ConstraintAdjacencyBuffer(0),
+      m_ConstraintIndicesBuffer(0),
+      m_GridHeadBuffer(0),
+      m_GridNextBuffer(0),
+      m_UniformBuffer(0),
+      m_CollisionUniformBuffer(0),
       m_WorkGroupSize(128),
       m_BatchSize(4),
-      m_PhysicsParamsBlockIndex(-1),
-      m_CollisionParamsBlockIndex(-1),
-      m_MaxIterations(2),
+      m_MaxIterations(8),
       m_UseTextureGather(false),
       m_AutoTuningEnabled(true),
       m_ManualPresetSelected(false),
       m_TotalParticles(0),
       m_TotalConstraints(0),
-      m_ClothCount(0),
-      m_Initialized(false) {
-}
+      m_Initialized(false) {}
 
 GPUPhysicsWorld::~GPUPhysicsWorld() {
-    // Uniform buffers
-    if (m_UniformBuffer != 0) {
-        glDeleteBuffers(1, &m_UniformBuffer);
-    }
-    if (m_CollisionUniformBuffer != 0) {
-        glDeleteBuffers(1, &m_CollisionUniformBuffer);
-    }
-
-    // Atomic collision buffers
-    if (m_CollisionCountBuffer != 0) {
-        glDeleteBuffers(1, &m_CollisionCountBuffer);
-    }
-    if (m_CollisionDataBuffer != 0) {
-        glDeleteBuffers(1, &m_CollisionDataBuffer);
-    }
-    
-    // Graph coloring buffers
-    if (m_ParticleColorsBuffer != 0) {
-        glDeleteBuffers(1, &m_ParticleColorsBuffer);
-    }
-    if (m_ColorCollisionCountBuffer != 0) {
-        glDeleteBuffers(1, &m_ColorCollisionCountBuffer);
-    }
-
-    // Constraint adjacency buffer
-    if (m_ConstraintAdjacencyBuffer != 0) {
-        glDeleteBuffers(1, &m_ConstraintAdjacencyBuffer);
-    }
-
-    // Constraint indices buffer
-    if (m_ConstraintIndicesBuffer != 0) {
-        glDeleteBuffers(1, &m_ConstraintIndicesBuffer);
-    }
-
-    // Terrain texture
-    if (m_TerrainHeightmapTexture != 0) {
-        glDeleteTextures(1, &m_TerrainHeightmapTexture);
-    }
+    if (m_UniformBuffer) glDeleteBuffers(1, &m_UniformBuffer);
+    if (m_CollisionUniformBuffer) glDeleteBuffers(1, &m_CollisionUniformBuffer);
+    if (m_PosBuffer) glDeleteBuffers(1, &m_PosBuffer);
+    if (m_PrevPosBuffer) glDeleteBuffers(1, &m_PrevPosBuffer);
+    if (m_VelBuffer) glDeleteBuffers(1, &m_VelBuffer);
+    if (m_ConstraintBuffer) glDeleteBuffers(1, &m_ConstraintBuffer);
+    if (m_ParticleColorsBuffer) glDeleteBuffers(1, &m_ParticleColorsBuffer);
+    if (m_PinnedFlagsBuffer) glDeleteBuffers(1, &m_PinnedFlagsBuffer);
+    if (m_ConstraintAdjacencyBuffer) glDeleteBuffers(1, &m_ConstraintAdjacencyBuffer);
+    if (m_ConstraintIndicesBuffer) glDeleteBuffers(1, &m_ConstraintIndicesBuffer);
+    if (m_GridHeadBuffer) glDeleteBuffers(1, &m_GridHeadBuffer);
+    if (m_GridNextBuffer) glDeleteBuffers(1, &m_GridNextBuffer);
+    if (m_TerrainHeightmapTexture) glDeleteTextures(1, &m_TerrainHeightmapTexture);
 }
 
 bool GPUPhysicsWorld::Initialize(const GPUPhysicsConfig& config) {
     m_Config = config;
-
-    // Detect GPU type
     const char* vendor = (const char*)glGetString(GL_VENDOR);
     m_IsHighEndGPU = (vendor && (strstr(vendor, "NVIDIA") || strstr(vendor, "AMD")));
-    m_IsIntelGPU = (vendor && strstr(vendor, "Intel"));
-    
-    std::cout << "[GPU] Detected: " << (vendor ? vendor : "Unknown") << std::endl;
-    std::cout << "[GPU] High-end (NVIDIA/AMD): " << (m_IsHighEndGPU ? "YES" : "NO") << std::endl;
-    std::cout << "[GPU] Intel Integrated: " << (m_IsIntelGPU ? "YES" : "NO") << std::endl;
 
-    // Load compute shader with GPU-specific optimizations
-    if (!LoadComputeShader()) {
-        std::cerr << "[GPUPhysicsWorld] Failed to load compute shader!" << std::endl;
+    // Check OpenGL version (need 4.3+ for compute shaders)
+    int major, minor;
+    glGetIntegerv(GL_MAJOR_VERSION, &major);
+    glGetIntegerv(GL_MINOR_VERSION, &minor);
+    
+    if (major < 4 || (major == 4 && minor < 3)) {
+        std::cerr << "[Physics] ERROR: OpenGL 4.3+ required for compute shaders!" << std::endl;
         return false;
     }
 
-    // Get work group size from compute shader
-    GLint workGroupSize[3];
-    glGetProgramiv(m_ComputeShader.GetID(), GL_COMPUTE_WORK_GROUP_SIZE, workGroupSize);
-    m_WorkGroupSize = static_cast<unsigned int>(workGroupSize[0]);
-    m_BatchSize = 4;  // Default conservative value
-    
-    // Cache uniform block indices (so we don't call glGetUniformBlockIndex every frame)
-    m_PhysicsParamsBlockIndex = glGetUniformBlockIndex(m_ComputeShader.GetID(), "PhysicsParams");
-    m_CollisionParamsBlockIndex = glGetUniformBlockIndex(m_ComputeShader.GetID(), "CollisionParams");
+    if (!LoadComputeShaders()) return false;
 
-    if (m_PhysicsParamsBlockIndex == GL_INVALID_INDEX) {
-        std::cerr << "[GPUPhysicsWorld] WARNING: PhysicsParams uniform block not found!" << std::endl;
-    } else {
-        // Set binding point 2 for PhysicsParams (NOT 0 - SSBOs use 0 and 1)
-        glUniformBlockBinding(m_ComputeShader.GetID(), m_PhysicsParamsBlockIndex, 2);
-    }
+    // Allocate Particle Buffers
+    glGenBuffers(1, &m_PosBuffer);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_PosBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, MAX_PARTICLES * sizeof(glm::vec4), nullptr, GL_DYNAMIC_DRAW);
 
-    if (m_CollisionParamsBlockIndex == GL_INVALID_INDEX) {
-        std::cerr << "[GPUPhysicsWorld] WARNING: CollisionParams uniform block not found!" << std::endl;
-    } else {
-        // Set binding point 3 for CollisionParams (NOT 1 - SSBOs use 0 and 1)
-        glUniformBlockBinding(m_ComputeShader.GetID(), m_CollisionParamsBlockIndex, 3);
-    }
+    glGenBuffers(1, &m_PrevPosBuffer);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_PrevPosBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, MAX_PARTICLES * sizeof(glm::vec4), nullptr, GL_DYNAMIC_DRAW);
 
-    // Create uniform buffers with CORRECT sizes for std140 layout
-    // PhysicsParams: Updated layout with advanced physics parameters
-    // Total: ~112 bytes → 128 bytes aligned
-    glGenBuffers(1, &m_UniformBuffer);
-    glBindBuffer(GL_UNIFORM_BUFFER, m_UniformBuffer);
-    glBufferData(GL_UNIFORM_BUFFER, 128, nullptr, GL_STATIC_DRAW);
-    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+    glGenBuffers(1, &m_VelBuffer);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_VelBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, MAX_PARTICLES * sizeof(glm::vec4), nullptr, GL_DYNAMIC_DRAW);
 
-    // CollisionParams: Updated layout with sphere friction parameters
-    // Total: ~64 bytes → 64 bytes aligned
-    glGenBuffers(1, &m_CollisionUniformBuffer);
-    glBindBuffer(GL_UNIFORM_BUFFER, m_CollisionUniformBuffer);
-    glBufferData(GL_UNIFORM_BUFFER, 64, nullptr, GL_STATIC_DRAW);
-    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+    // Allocate Constraint Buffers
+    glGenBuffers(1, &m_ConstraintBuffer);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_ConstraintBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, MAX_CONSTRAINTS * sizeof(ConstraintDataType), nullptr, GL_DYNAMIC_DRAW);
 
-    UpdateUniforms(1.0f / 60.0f);
+    glGenBuffers(1, &m_PinnedFlagsBuffer);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_PinnedFlagsBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, MAX_PARTICLES * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
 
-    // Initialize atomic collision buffers
-    glGenBuffers(1, &m_CollisionCountBuffer);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_CollisionCountBuffer);
-    unsigned int initialCollisionCount = 0;
-    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(unsigned int), &initialCollisionCount, GL_DYNAMIC_COPY);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-    
-    // Collision data buffer (max 16384 collisions)
-    glGenBuffers(1, &m_CollisionDataBuffer);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_CollisionDataBuffer);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, 16384 * sizeof(unsigned int), nullptr, GL_DYNAMIC_COPY);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-    
-    // Initialize graph coloring buffers
     glGenBuffers(1, &m_ParticleColorsBuffer);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_ParticleColorsBuffer);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, MAX_PARTICLES * sizeof(unsigned int), nullptr, GL_DYNAMIC_COPY);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, MAX_PARTICLES * sizeof(unsigned int), nullptr, GL_DYNAMIC_DRAW);
     
-    // Color collision counters (one per color) - now supports 16 colors
-    glGenBuffers(1, &m_ColorCollisionCountBuffer);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_ColorCollisionCountBuffer);
-    unsigned int colorCounts[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-    glBufferData(GL_SHADER_STORAGE_BUFFER, 16 * sizeof(unsigned int), colorCounts, GL_DYNAMIC_COPY);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-
-    // Constraint adjacency list buffer (will be built after cloth initialization)
     glGenBuffers(1, &m_ConstraintAdjacencyBuffer);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_ConstraintAdjacencyBuffer);
-    // Each entry: ivec2 (offset, count) - 8 bytes per particle
-    glBufferData(GL_SHADER_STORAGE_BUFFER, MAX_PARTICLES * 2 * sizeof(int), nullptr, GL_DYNAMIC_COPY);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, MAX_PARTICLES * sizeof(glm::ivec2), nullptr, GL_DYNAMIC_DRAW);
 
-    // Constraint indices buffer (flat array)
     glGenBuffers(1, &m_ConstraintIndicesBuffer);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_ConstraintIndicesBuffer);
-    // Max 24 constraints per particle × MAX_PARTICLES (support double bend/shear)
-    glBufferData(GL_SHADER_STORAGE_BUFFER, MAX_PARTICLES * 24 * sizeof(int), nullptr, GL_DYNAMIC_COPY);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, MAX_CONSTRAINTS * 2 * sizeof(int), nullptr, GL_DYNAMIC_DRAW);
 
-    // IMPORTANT: Set initialized flag
+    // Grid Buffers - match shader GRID_SIZE
+    const unsigned int GRID_SIZE = 32768u;
+    std::vector<unsigned int> initGrid(GRID_SIZE, 0xFFFFFFFF);
+    glGenBuffers(1, &m_GridHeadBuffer);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_GridHeadBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, GRID_SIZE * sizeof(unsigned int), initGrid.data(), GL_DYNAMIC_DRAW);
+
+    std::vector<unsigned int> initNext(MAX_PARTICLES, 0xFFFFFFFF);
+    glGenBuffers(1, &m_GridNextBuffer);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_GridNextBuffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, MAX_PARTICLES * sizeof(unsigned int), initNext.data(), GL_DYNAMIC_DRAW);
+
+    // Uniform Buffers
+    glGenBuffers(1, &m_UniformBuffer);
+    glBindBuffer(GL_UNIFORM_BUFFER, m_UniformBuffer);
+    glBufferData(GL_UNIFORM_BUFFER, 160, nullptr, GL_DYNAMIC_DRAW); // Updated size to match struct
+    
+    glGenBuffers(1, &m_CollisionUniformBuffer);
+    glBindBuffer(GL_UNIFORM_BUFFER, m_CollisionUniformBuffer);
+    glBufferData(GL_UNIFORM_BUFFER, 128, nullptr, GL_DYNAMIC_DRAW); // Updated size
+
+    UpdateUniforms(1.0f / 60.0f);
     m_Initialized = true;
-
-    // Run auto-tune benchmark ONLY if user didn't manually select a preset
-    if (m_AutoTuningEnabled && !m_ManualPresetSelected) {
-        AutoTuneSettings();
-    } else if (m_ManualPresetSelected) {
-        std::cout << "[GPU] Manual preset selected - using preset settings: iterations=" << m_MaxIterations 
-                  << ", textureGather=" << (m_UseTextureGather ? "YES" : "NO") << std::endl;
-    }
-
     return true;
 }
 
-bool GPUPhysicsWorld::LoadComputeShader() {
-    // Load shader source
-    std::ifstream file("shaders/physics/physics.comp");
-    if (!file.is_open()) {
-        std::cerr << "[GPUPhysicsWorld] Failed to open shader file!" << std::endl;
-        return false;
-    }
-    
-    std::stringstream buffer;
-    buffer << file.rdbuf();
-    std::string shaderSource = buffer.str();
-    file.close();
-
-    // GPU-specific optimizations based on auto-tune OR vendor detection
-    if (m_UseTextureGather || m_IsHighEndGPU) {
-        // High-end: Enable textureGather
-        std::cout << "[GPU] Using HIGH-END shader path (textureGather)" << std::endl;
-        shaderSource = replace(shaderSource, "#define USE_TEXTURE_GATHER 0", "#define USE_TEXTURE_GATHER 1");
-    } else {
-        // Integrated: Use optimized path
-        std::cout << "[GPU] Using INTEGRATED shader path (textureLod)" << std::endl;
-    }
-
-    // Apply auto-tuned iteration count
-    // Replace any value of MAX_ITERATIONS_RUNTIME with the target value
-    std::cout << "[GPU] MAX_ITERATIONS = " << m_MaxIterations << std::endl;
-    
-    // Find and replace the #define line (whatever value it currently has)
-    size_t definePos = shaderSource.find("#define MAX_ITERATIONS_RUNTIME");
-    if (definePos != std::string::npos) {
-        // Find end of line
-        size_t lineEnd = shaderSource.find('\n', definePos);
-        if (lineEnd != std::string::npos) {
-            // Replace the entire #define line
-            std::string newDefine = "#define MAX_ITERATIONS_RUNTIME " + std::to_string(m_MaxIterations);
-            shaderSource.replace(definePos, lineEnd - definePos, newDefine);
+bool GPUPhysicsWorld::LoadComputeShaders() {
+    auto preprocess = [](const std::string& path) -> std::string {
+        std::ifstream file(path);
+        if (!file.is_open()) {
+            std::cerr << "[Physics] Error: Could not open shader file: " << path << std::endl;
+            return "";
         }
-    }
-
-    // Compile shader from source
-    m_ComputeShader = Shader::CreateComputeShaderFromSource(shaderSource);
-
-    if (m_ComputeShader.GetID() != 0) {
-        m_ShaderLoaded = true;
-        return true;
-    }
-
-    std::cerr << "[GPUPhysicsWorld] Failed to compile compute shader!" << std::endl;
-    return false;
-}
-
-// Helper function to replace strings
-std::string GPUPhysicsWorld::replace(const std::string& str, const std::string& from, const std::string& to) {
-    std::string result = str;
-    size_t pos = 0;
-    while ((pos = result.find(from, pos)) != std::string::npos) {
-        result.replace(pos, from.length(), to);
-        pos += to.length();
-    }
-    return result;
-}
-
-size_t GPUPhysicsWorld::InitializeCloth(int widthSegments, int heightSegments,
-                                        float startX, float startY, float startZ,
-                                        float segmentLength, bool pinned) {
-    // Calculate particle count
-    int numParticles = (widthSegments + 1) * (heightSegments + 1);
-    
-    // Count constraints accurately (with DOUBLE shear and bend)
-    int numConstraints = 0;
-    
-    // Structural (horizontal + vertical)
-    numConstraints += widthSegments * (heightSegments + 1);  // Horizontal
-    numConstraints += heightSegments * (widthSegments + 1);  // Vertical
-    
-    // Shear (DOUBLE: primary + secondary + skip-2)
-    numConstraints += widthSegments * heightSegments * 2;  // Primary + Secondary
-    // Skip-2 shear (only when x < widthSegments-1 && y < heightSegments-1)
-    if (widthSegments > 1 && heightSegments > 1) {
-        numConstraints += (widthSegments - 1) * (heightSegments - 1) * 2;
-    }
-    
-    // Bend (DOUBLE: skip-1 + skip-2)
-    // Skip-1 bend
-    numConstraints += (widthSegments - 1) * (heightSegments + 1);  // Horizontal
-    numConstraints += (widthSegments + 1) * (heightSegments - 1);  // Vertical
-    // Skip-2 bend
-    if (widthSegments > 2) {
-        numConstraints += (widthSegments - 2) * (heightSegments + 1);  // Horizontal
-    }
-    if (heightSegments > 2) {
-        numConstraints += (widthSegments + 1) * (heightSegments - 2);  // Vertical
-    }
-
-    size_t particleOffset = m_TotalParticles;
-    size_t constraintOffset = m_TotalConstraints;
-
-    // Assign unique ID to this cloth for inter-cloth collision detection
-    unsigned int clothID = m_ClothCount++;
-    std::cout << "[GPU] Initializing cloth " << clothID << " at offset " << particleOffset << std::endl;
-
-    // Create particles using new interleaved ParticleData structure
-    std::vector<ParticleData> particles(numParticles);
-    for (int y = 0; y <= heightSegments; y++) {
-        for (int x = 0; x <= widthSegments; x++) {
-            int idx = y * (widthSegments + 1) + x;
-            particles[idx].position = glm::vec4(
-                startX + x * segmentLength,
-                startY,
-                startZ + y * segmentLength,
-                1.0f  // mass
-            );
-            // Store clothID in prevPosition.w for inter-cloth collision detection in shader
-            particles[idx].prevPosition = glm::vec4(glm::vec3(particles[idx].position), (float)clothID);
-            particles[idx].velocity = glm::vec4(0.0f, 0.0f, 0.0f, pinned ? 1.0f : 0.0f);
-        }
-    }
-
-    // Create constraints using new interleaved ConstraintData structure
-    std::vector<ConstraintData> constraints(numConstraints);
-    size_t cIdx = 0;
-
-    float stiffness = 1.0f;
-
-    // Structural constraints
-    for (int y = 0; y <= heightSegments; y++) {
-        for (int x = 0; x < widthSegments; x++) {
-            int p1 = y * (widthSegments + 1) + x;
-            int p2 = p1 + 1;
-            constraints[cIdx].indices = glm::ivec4(p1, p2, 0, 0);
-            constraints[cIdx].params = glm::vec2(segmentLength, stiffness);
-            cIdx++;
-        }
-    }
-
-    for (int y = 0; y < heightSegments; y++) {
-        for (int x = 0; x <= widthSegments; x++) {
-            int p1 = y * (widthSegments + 1) + x;
-            int p2 = p1 + (widthSegments + 1);
-            constraints[cIdx].indices = glm::ivec4(p1, p2, 0, 0);
-            constraints[cIdx].params = glm::vec2(segmentLength, stiffness);
-            cIdx++;
-        }
-    }
-
-    // Shear constraints (DOUBLE: add both diagonal directions)
-    for (int y = 0; y < heightSegments; y++) {
-        for (int x = 0; x < widthSegments; x++) {
-            // Primary shear (bottom-left to top-right)
-            int p1 = y * (widthSegments + 1) + x;
-            int p2 = p1 + (widthSegments + 1) + 1;
-            constraints[cIdx].indices = glm::ivec4(p1, p2, 1, 0);
-            constraints[cIdx].params = glm::vec2(glm::length(glm::vec3(segmentLength, 0, segmentLength)), 0.5f);
-            cIdx++;
-
-            // Secondary shear (bottom-right to top-left)
-            p1 = y * (widthSegments + 1) + x + 1;
-            p2 = p1 + (widthSegments + 1) - 1;
-            constraints[cIdx].indices = glm::ivec4(p1, p2, 1, 0);
-            constraints[cIdx].params = glm::vec2(glm::length(glm::vec3(segmentLength, 0, segmentLength)), 0.5f);
-            cIdx++;
-            
-            // Additional shear (skip 2 particles for extra stability)
-            if (x < widthSegments - 1 && y < heightSegments - 1) {
-                p1 = y * (widthSegments + 1) + x;
-                p2 = p1 + 2 * (widthSegments + 1) + 2;
-                constraints[cIdx].indices = glm::ivec4(p1, p2, 1, 0);
-                constraints[cIdx].params = glm::vec2(glm::length(glm::vec3(segmentLength*2, 0, segmentLength*2)), 0.4f);
-                cIdx++;
-                
-                p1 = y * (widthSegments + 1) + x + 2;
-                p2 = p1 + 2 * (widthSegments + 1) - 2;
-                constraints[cIdx].indices = glm::ivec4(p1, p2, 1, 0);
-                constraints[cIdx].params = glm::vec2(glm::length(glm::vec3(segmentLength*2, 0, segmentLength*2)), 0.4f);
-                cIdx++;
+        std::stringstream ss;
+        std::string line;
+        while (std::getline(file, line)) {
+            if (line.find("#include") != std::string::npos) {
+                size_t start = line.find('"');
+                size_t end = line.find('"', start + 1);
+                if (start != std::string::npos && end != std::string::npos) {
+                    std::string includePath = "shaders/physics/modular/" + line.substr(start + 1, end - start - 1);
+                    std::ifstream inc(includePath);
+                    if (!inc.is_open()) {
+                        std::cerr << "[Physics] Error: Could not open included shader: " << includePath << std::endl;
+                    } else {
+                        ss << inc.rdbuf() << "\n";
+                    }
+                }
+            } else {
+                ss << line << "\n";
             }
         }
-    }
+        return ss.str();
+    };
 
-    // Bend constraints (DOUBLE: add both skip-1 and skip-2)
-    // Skip-1 bend (horizontal)
-    for (int y = 0; y <= heightSegments; y++) {
-        for (int x = 0; x < widthSegments - 1; x++) {
-            int p1 = y * (widthSegments + 1) + x;
-            int p2 = p1 + 2;
-            constraints[cIdx].indices = glm::ivec4(p1, p2, 2, 0);
-            constraints[cIdx].params = glm::vec2(segmentLength * 2.0f, 0.2f);  // Reduced from 0.3f
-            cIdx++;
-        }
-    }
-
-    // Skip-1 bend (vertical)
-    for (int x = 0; x <= widthSegments; x++) {
-        for (int y = 0; y < heightSegments - 1; y++) {
-            int p1 = y * (widthSegments + 1) + x;
-            int p2 = p1 + 2 * (widthSegments + 1);
-            constraints[cIdx].indices = glm::ivec4(p1, p2, 2, 0);
-            constraints[cIdx].params = glm::vec2(segmentLength * 2.0f, 0.2f);  // Reduced from 0.3f
-            cIdx++;
-        }
-    }
+    m_IntegrateShader = Shader::CreateComputeShaderFromSource(preprocess("shaders/physics/modular/physics_integrate.comp"));
+    if (!m_IntegrateShader.GetID()) return false;
     
-    // Skip-2 bend (horizontal) - extra stability
-    for (int y = 0; y <= heightSegments; y++) {
-        for (int x = 0; x < widthSegments - 2; x++) {
-            int p1 = y * (widthSegments + 1) + x;
-            int p2 = p1 + 3;
-            constraints[cIdx].indices = glm::ivec4(p1, p2, 2, 0);
-            constraints[cIdx].params = glm::vec2(segmentLength * 3.0f, 0.15f);  // Reduced from 0.2f
-            cIdx++;
-        }
-    }
+    m_SolveShader = Shader::CreateComputeShaderFromSource(preprocess("shaders/physics/modular/physics_solve.comp"));
+    if (!m_SolveShader.GetID()) return false;
+    
+    m_CollideShader = Shader::CreateComputeShaderFromSource(preprocess("shaders/physics/modular/physics_collide.comp"));
+    if (!m_CollideShader.GetID()) return false;
+    
+    m_ClearGridShader = Shader::CreateComputeShaderFromSource(preprocess("shaders/physics/modular/physics_clear_grid.comp"));
+    if (!m_ClearGridShader.GetID()) return false;
 
-    // Skip-2 bend (vertical) - extra stability
-    for (int x = 0; x <= widthSegments; x++) {
-        for (int y = 0; y < heightSegments - 2; y++) {
-            int p1 = y * (widthSegments + 1) + x;
-            int p2 = p1 + 3 * (widthSegments + 1);
-            constraints[cIdx].indices = glm::ivec4(p1, p2, 2, 0);
-            constraints[cIdx].params = glm::vec2(segmentLength * 3.0f, 0.15f);  // Reduced from 0.2f
-            cIdx++;
-        }
-    }
-
-    // Upload to GPU - PRE-ALLOCATE large buffer for all 3 cloths
-    if (m_TotalParticles == 0) {
-        // First cloth - allocate maximum buffer size upfront
-        // Allocate MAX buffer size upfront
-        m_ParticleBuffer.Initialize(MAX_PARTICLES);
-        m_ParticleBuffer.UploadSubset(0, particles.size(), particles);
-
-        // Create pinned flags buffer with MAX size
-        std::vector<float> pinnedFlags(MAX_PARTICLES, 1.0f);  // All pinned by default
-        m_PinnedFlagsCPU.resize(MAX_PARTICLES, 1.0f);
-        glGenBuffers(1, &m_PinnedFlagsBuffer);
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_PinnedFlagsBuffer);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, pinnedFlags.size() * sizeof(float),
-                     pinnedFlags.data(), GL_DYNAMIC_DRAW);
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-
-        // Initialize particle colors for graph coloring (9-color pattern)
-        std::vector<unsigned int> particleColors(MAX_PARTICLES, 0);
-        for (int y = 0; y <= heightSegments; y++) {
-            for (int x = 0; x <= widthSegments; x++) {
-                int idx = y * (widthSegments + 1) + x;
-                particleColors[idx] = ((x % 3) + (y % 3) * 3);
-            }
-        }
-        
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_ParticleColorsBuffer);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, particleColors.size() * sizeof(unsigned int),
-                     particleColors.data(), GL_DYNAMIC_COPY);
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-
-        // Allocate MAX constraint buffer size
-        m_ConstraintBuffer.Initialize(MAX_CONSTRAINTS);
-        m_ConstraintBuffer.UploadSubset(0, constraints.size(), constraints);
-
-        m_TotalParticles = numParticles;  // No dummy particle
-        m_TotalConstraints = numConstraints;
-
-        // Return offset 0 (no dummy particle)
-        return 0;
-    } else {
-        // Subsequent cloths - append to existing buffer
-        size_t newTotalParticles = m_TotalParticles + numParticles;
-        size_t newTotalConstraints = m_TotalConstraints + numConstraints;
-
-        // Upload new particles at offset
-        m_ParticleBuffer.UploadSubset(m_TotalParticles, numParticles, particles);
-
-        // Update pinned flags for new particles (they start pinned)
-        for (size_t i = m_TotalParticles; i < newTotalParticles; i++) {
-            m_PinnedFlagsCPU[i] = 1.0f;
-        }
-        // Upload updated pinned flags
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_PinnedFlagsBuffer);
-        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, m_PinnedFlagsCPU.size() * sizeof(float),
-                        m_PinnedFlagsCPU.data());
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-
-        // CRITICAL: Offset particle indices in constraints for this cloth
-        std::vector<ConstraintData> offsetConstraints = constraints;
-        for (size_t c = 0; c < offsetConstraints.size(); c++) {
-            offsetConstraints[c].indices.x += (int)m_TotalParticles;  // p1 offset
-            offsetConstraints[c].indices.y += (int)m_TotalParticles;  // p2 offset
-        }
-        
-        // Upload new constraints at offset
-        m_ConstraintBuffer.UploadSubset(m_TotalConstraints, numConstraints, offsetConstraints);
-
-        // Initialize particle colors for NEW cloth at offset (9-color pattern)
-        std::vector<unsigned int> newClothColors(numParticles);
-        for (int y = 0; y <= heightSegments; y++) {
-            for (int x = 0; x <= widthSegments; x++) {
-                int idx = y * (widthSegments + 1) + x;
-                newClothColors[idx] = ((x % 3) + (y % 3) * 3);
-            }
-        }
-        // Upload colors at correct offset
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_ParticleColorsBuffer);
-        glBufferSubData(GL_SHADER_STORAGE_BUFFER,
-                        m_TotalParticles * sizeof(unsigned int),  // Offset for this cloth
-                        newClothColors.size() * sizeof(unsigned int),
-                        newClothColors.data());
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-
-        m_TotalParticles = newTotalParticles;
-        m_TotalConstraints = newTotalConstraints;
-
-        // Force synchronization to ensure all cloth data is uploaded before simulation
-        glMemoryBarrier(GL_CLIENT_MAPPED_BUFFER_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
-        glFinish();
-
-        // Build constraint adjacency list for optimized constraint solving
-        BuildConstraintAdjacencyList();
-
-        // Ensure adjacency data is also synchronized
-        glMemoryBarrier(GL_CLIENT_MAPPED_BUFFER_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
-        glFinish();
-
-        return particleOffset;
-    }
+    m_ShadersLoaded = true;
+    return m_ShadersLoaded;
 }
-void GPUPhysicsWorld::SetParticlesPinned(size_t startIdx, size_t count, bool pinned) {
-    // Use CPU copy directly (no GPU read-back needed)
-    if (m_PinnedFlagsCPU.empty() || m_PinnedFlagsCPU.size() < m_TotalParticles) {
-        std::cerr << "[SetParticlesPinned] ERROR: CPU flags buffer not initialized!" << std::endl;
-        return;
+
+size_t GPUPhysicsWorld::InitializeCloth(int width, int height, float sx, float sy, float sz, float len, bool pinned) {
+    size_t numParticles = (width + 1) * (height + 1);
+    unsigned int clothID = (unsigned int)m_ClothCount++;
+
+    const float structuralStiff = 0.95f;
+    const float shearStiff = 0.7f;
+    const float bendStiff = 0.4f;
+
+    std::vector<glm::vec4> pos(numParticles);
+    std::vector<glm::vec4> prevPos(numParticles);
+    std::vector<glm::vec4> vel(numParticles);
+
+    for (int y = 0; y <= height; ++y) {
+        for (int x = 0; x <= width; ++x) {
+            size_t idx = y * (width + 1) + x;
+            glm::vec3 p(sx + x * len, sy, sz + y * len);
+            pos[idx] = glm::vec4(p, 1.0f);
+            prevPos[idx] = glm::vec4(p, (float)clothID);
+            vel[idx] = glm::vec4(0.0f, 0.0f, 0.0f, pinned ? 1.0f : 0.0f);
+        }
     }
 
-    // Update flags for this cloth
-    float flagValue = pinned ? 1.0f : 0.0f;
-    for (size_t i = startIdx; i < startIdx + count; i++) {
-        m_PinnedFlagsCPU[i] = flagValue;
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_PosBuffer);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, m_TotalParticles * sizeof(glm::vec4), numParticles * sizeof(glm::vec4), pos.data());
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_PrevPosBuffer);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, m_TotalParticles * sizeof(glm::vec4), numParticles * sizeof(glm::vec4), prevPos.data());
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_VelBuffer);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, m_TotalParticles * sizeof(glm::vec4), numParticles * sizeof(glm::vec4), vel.data());
+
+    // Generate Constraints
+    std::vector<ConstraintDataType> constraints;
+    auto addConstraint = [&](int p1, int p2, float stiff) {
+        ConstraintDataType c;
+        c.indices = glm::ivec4(m_TotalParticles + p1, m_TotalParticles + p2, 0, 0);
+        glm::vec3 p1pos = glm::vec3(pos[p1]);
+        glm::vec3 p2pos = glm::vec3(pos[p2]);
+        c.params = glm::vec2(glm::distance(p1pos, p2pos), stiff);
+        constraints.push_back(c);
+    };
+
+    for (int y = 0; y <= height; y++) {
+        for (int x = 0; x <= width; x++) {
+            int i = y * (width + 1) + x;
+            // Structural
+            if (x < width) addConstraint(i, i + 1, structuralStiff);
+            if (y < height) addConstraint(i, i + width + 1, structuralStiff);
+            // Shear
+            if (x < width && y < height) {
+                addConstraint(i, i + width + 2, shearStiff);
+                addConstraint(i + 1, i + width + 1, shearStiff);
+            }
+            // Bend
+            if (x < width - 1) addConstraint(i, i + 2, bendStiff);
+            if (y < height - 1) addConstraint(i, i + 2 * (width + 1), bendStiff);
+        }
     }
 
-    // Upload ALL updated flags to GPU buffer
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_ConstraintBuffer);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, m_TotalConstraints * sizeof(ConstraintDataType), constraints.size() * sizeof(ConstraintDataType), constraints.data());
+
+    size_t offset = m_TotalParticles;
+    m_TotalParticles += numParticles;
+    m_TotalConstraints += constraints.size();
+
+    // Set initial pinned state
+    SetParticlesPinned(offset, numParticles, pinned);
+
+    // Rebuild adjacency list whenever a new cloth is added
+    BuildConstraintAdjacencyList();
+
+    return offset;
+}
+
+void GPUPhysicsWorld::SetParticlesPinned(size_t start, size_t count, bool pinned) {
+    if (!m_PinnedFlagsBuffer) return;
+    std::vector<float> flags(count, pinned ? 1.0f : 0.0f);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_PinnedFlagsBuffer);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER,
-                    0,
-                    m_TotalParticles * sizeof(float),
-                    m_PinnedFlagsCPU.data());
-    
-    // CRITICAL: Re-bind to binding point 4 for compute shader
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, m_PinnedFlagsBuffer);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-
-    // Memory barrier to ensure compute shader sees the update
-    glMemoryBarrier(GL_ALL_BARRIER_BITS);
-    glFlush();
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, start * sizeof(float), count * sizeof(float), flags.data());
 }
 
 void GPUPhysicsWorld::Update(float deltaTime) {
-    if (!m_Initialized || !m_ShaderLoaded) {
+    if (!m_Initialized || m_TotalParticles == 0) return;
+
+    // Safety check: too many particles can cause GPU hang
+    if (m_TotalParticles > MAX_PARTICLES) {
+        std::cerr << "[Physics] Warning: Too many particles (" << m_TotalParticles << "), clamping to MAX_PARTICLES" << std::endl;
         return;
     }
 
-    // Clamp deltaTime
-    if (deltaTime > 0.033f) deltaTime = 0.033f;
-    if (deltaTime < 0.001f) deltaTime = 0.001f;
+    unsigned int totalGroups = (unsigned int)(m_TotalParticles + 127) / 128;
 
-    // Update uniforms with current deltaTime
+    // Grid groups - must match shader GRID_SIZE
+    const unsigned int GRID_SIZE = 32768u;
+    unsigned int gridGroups = (GRID_SIZE + 127) / 128;
+
+    // Cap work groups to avoid GPU hang
+    if (totalGroups > 256) totalGroups = 256;
+
     UpdateUniforms(deltaTime);
 
-    // Bind compute shader
-    m_ComputeShader.Bind();
+    // Bind all buffers to their respective binding points
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, m_PosBuffer);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, m_ConstraintBuffer);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 2, m_UniformBuffer);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 8, m_CollisionUniformBuffer);  // Binding 8 for collide shader
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, m_PinnedFlagsBuffer);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, m_PrevPosBuffer);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, m_VelBuffer);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, m_ParticleColorsBuffer);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, m_ConstraintAdjacencyBuffer);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 10, m_ConstraintIndicesBuffer);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 11, m_GridHeadBuffer);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 12, m_GridNextBuffer);
 
-    // Check shader program is valid
-    if (m_ComputeShader.GetID() == 0) {
-        std::cerr << "[GPUPhysicsWorld] ERROR: Compute shader ID is 0!" << std::endl;
-        return;
-    }
-
-    // Validate shader program once at startup
-    if (!m_ShaderValidated) {
-        GLint success;
-        glGetProgramiv(m_ComputeShader.GetID(), GL_VALIDATE_STATUS, &success);
-        if (!success) {
-            char infoLog[1024];
-            glGetProgramInfoLog(m_ComputeShader.GetID(), 1024, NULL, infoLog);
-            std::cerr << "[GPUPhysicsWorld] ERROR: Compute shader validation failed!" << std::endl;
-            std::cerr << "[GPUPhysicsWorld] Info log: " << (infoLog[0] != '\0' ? infoLog : "(empty)") << std::endl;
-            return;
-        }
-        m_ShaderValidated = true;
-    }
-
-    // Clear any pending errors
-    while (glGetError() != GL_NO_ERROR);
-
-    // Bind terrain heightmap texture
-    glActiveTexture(GL_TEXTURE0);
-    if (m_TerrainHeightmapTexture != 0) {
+    if (m_Terrain && m_TerrainHeightmapTexture) {
+        glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, m_TerrainHeightmapTexture);
-    } else {
-        glBindTexture(GL_TEXTURE_2D, 0);
+        m_CollideShader.SetInt("terrainHeightmap", 0);
     }
-    m_ComputeShader.SetInt("terrainHeightmap", 0);
 
-    // Clear errors after texture bind
-    while (glGetError() != GL_NO_ERROR);
-
-    // Bind SSBOs to binding points 0, 1, 4, 5, 6, 7, 8
-    m_ParticleBuffer.Bind();  // Binding point 0
-    m_ConstraintBuffer.Bind();  // Binding point 1
-
-    // Bind pinned flags buffer to binding point 4
-    if (m_PinnedFlagsBuffer != 0) {
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, m_PinnedFlagsBuffer);
-    }
+    // === TEST: Comment out ALL compute shaders to find the culprit ===
+    // If screen still freezes, problem is NOT in compute shaders
     
-    // Bind atomic collision buffers
-    if (m_CollisionCountBuffer != 0) {
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, m_CollisionCountBuffer);
-    }
-    if (m_CollisionDataBuffer != 0) {
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, m_CollisionDataBuffer);
-    }
+    // 0. Clear Grid (Separate pass to avoid race conditions)
+    m_ClearGridShader.Bind();
+    glDispatchCompute(gridGroups, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
-    // Bind constraint adjacency list buffer (binding point 9)
-    if (m_ConstraintAdjacencyBuffer != 0) {
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, m_ConstraintAdjacencyBuffer);
-    }
+    // 1. Integration & Grid Population
+    m_IntegrateShader.Bind();
+    glDispatchCompute(totalGroups, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
-    // Bind constraint indices buffer (binding point 10)
-    if (m_ConstraintIndicesBuffer != 0) {
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 10, m_ConstraintIndicesBuffer);
-    }
-
-    // Bind graph coloring buffers
-    if (m_ParticleColorsBuffer != 0) {
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, m_ParticleColorsBuffer);
-    }
-    if (m_ColorCollisionCountBuffer != 0) {
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 8, m_ColorCollisionCountBuffer);
-    }
-
-    // Bind uniform buffers to binding points 2 and 3
-    if (m_PhysicsParamsBlockIndex != -1) {
-        glBindBufferBase(GL_UNIFORM_BUFFER, 2, m_UniformBuffer);
-    }
-    if (m_CollisionParamsBlockIndex != -1) {
-        glBindBufferBase(GL_UNIFORM_BUFFER, 3, m_CollisionUniformBuffer);
-    }
-
-    // Calculate work groups
-    unsigned int totalWorkGroups = static_cast<unsigned int>((m_TotalParticles + m_WorkGroupSize - 1) / m_WorkGroupSize);
-
-    // Safety check: ensure we have valid work groups
-    if (totalWorkGroups == 0 || m_TotalParticles == 0) {
-        std::cerr << "[GPUPhysicsWorld] No particles to simulate!" << std::endl;
-        m_ParticleBuffer.Unbind();
-        m_ConstraintBuffer.Unbind();
-        m_ComputeShader.Unbind();
-        return;
-    }
-
-    // === SUBSTEP LOOP ===
-    int substeps = m_Config.collisionSubsteps;
-    if (substeps < 1) substeps = 1;
-    float subDeltaTime = deltaTime / substeps;
-
-    for (int s = 0; s < substeps; s++) {
-        // Update uniforms with current subDeltaTime
-        UpdateUniforms(subDeltaTime);
-
-        // Bind compute shader
-        m_ComputeShader.Bind();
-
-        // Clear collision count at start of each substep
-        unsigned int zeroCount = 0;
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_CollisionCountBuffer);
-        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(unsigned int), &zeroCount);
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-
-        // Memory barrier to ensure previous substep is visible
-        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_UNIFORM_BARRIER_BIT);
-
-        // === DISPATCH COMPUTE SHADER ===
-        glDispatchCompute(totalWorkGroups, 1, 1);
-
-        // Check for dispatch errors
-        if (s == 0) {
-            GLenum err = glGetError();
-            if (err != GL_NO_ERROR) {
-                std::cerr << "[GPUPhysicsWorld] glDispatchCompute ERROR: " << err << std::endl;
-                break;
-            }
-        }
-
-        // Memory barrier between substeps
+    // 2. Constraint Solving (Graph Coloring Pass)
+    m_SolveShader.Bind();
+    for (int color = 0; color < MAX_COLORS; color++) {
+        m_SolveShader.SetInt("current_color", color);
+        glDispatchCompute(totalGroups, 1, 1);
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
     }
 
-    // Wait for GPU completion to ensure physics sync before rendering
-    glFinish();
+    // 3. Collision Resolution
+    m_CollideShader.Bind();
+    glDispatchCompute(totalGroups, 1, 1);
 
-    // Swap double buffers for next frame
-    if (m_ParticleBuffer.IsDoubleBuffered()) {
-        m_ParticleBuffer.SwapBuffers();
-    }
+    // Crucial: Tell GPU that SSBO data will now be used as Vertex Attributes for rendering
+    glMemoryBarrier(GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT);
+}
 
-    // Unbind
-    m_ParticleBuffer.Unbind();
-    m_ConstraintBuffer.Unbind();
-    m_ComputeShader.Unbind();
+void GPUPhysicsWorld::Unbind() const {
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 }
 
 void GPUPhysicsWorld::UpdateUniforms(float deltaTime) {
-    // Physics params uniform block
-    // Updated layout to match shader (std140 layout):
-    // - vec3 gravity (16 bytes)
-    // - float deltaTime (4 bytes)
-    // - float damping (4 bytes)
-    // - int numParticles (4 bytes)
-    // - int numConstraints (4 bytes)
-    // - float restLength (4 bytes)
-    // - vec2 terrainSize (8 bytes)
-    // - float terrainHeightScale (4 bytes)
-    // - float gravityScale (4 bytes)
-    // - float airResistance (4 bytes)
-    // - float windStrength (4 bytes)
-    // - vec3 windDirection (16 bytes)
-    // - float stretchResistance (4 bytes)
-    // - float maxVelocity (4 bytes)
-    // - float selfCollisionRadius (4 bytes)
-    // - float selfCollisionStrength (4 bytes)
-    // Total: ~112 bytes → 128 bytes aligned (4 vec4s)
+    if (!m_UniformBuffer || !m_CollisionUniformBuffer) return;
+
+    // Physics Parameters (binding 2)
+    struct PhysicsParams {
+        glm::vec4 gravity_dt;        // xyz = gravity, w = deltaTime
+        glm::vec4 params1;           // x = damping, y = numParticles, z = numConstraints, w = restLength
+        glm::vec4 terrain;           // xy = terrainSize, z = terrainHeightScale, w = gravityScale
+        glm::vec4 forces;            // x = airResistance, y = windStrength, zw = padding
+        glm::vec4 windDir_stretch;   // xyz = windDirection, w = stretchResistance
+        glm::vec4 limits;            // x = maxVelocity, y = selfCollisionRadius, z = selfCollisionStrength, w = padding
+    } p;
+
+    p.gravity_dt = glm::vec4(m_Config.gravity, deltaTime);
+    p.params1 = glm::vec4(m_Config.damping, (float)m_TotalParticles, (float)m_TotalConstraints, 0.1f); 
     
+    glm::vec2 tSize = m_Terrain ? m_Terrain->GetSize() : glm::vec2(0.0f);
+    float tHeight = m_Terrain ? m_Terrain->GetHeightScale() : 0.0f;
+    p.terrain = glm::vec4(tSize.x, tSize.y, tHeight, m_Config.gravityScale);
+    
+    p.forces = glm::vec4(m_Config.airResistance, m_Config.windStrength, 0.0f, 0.0f);
+    p.windDir_stretch = glm::vec4(m_Config.windDirection, m_Config.stretchResistance);
+    p.limits = glm::vec4(m_Config.maxVelocity, m_Config.selfCollisionRadius, m_Config.selfCollisionStrength, 0.0f);
+
     glBindBuffer(GL_UNIFORM_BUFFER, m_UniformBuffer);
+    glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(PhysicsParams), &p);
 
-    float physicsData[24]; // 6 vec4s = 96 bytes
-    int idx = 0;
-    
-    // vec4: gravity_dt (xyz = gravity, w = deltaTime)
-    physicsData[idx++] = m_Config.gravity.x;
-    physicsData[idx++] = m_Config.gravity.y;
-    physicsData[idx++] = m_Config.gravity.z;
-    physicsData[idx++] = deltaTime;
+    // Collision Parameters (binding 3)
+    struct CollisionParamsData {
+        glm::vec3 sphereCenter; float padding1;
+        float sphereRadius;
+        float groundLevel;
+        float collisionMargin;
+        float dampingFactor;
+        float frictionFactor;
+        int collisionSubsteps;
+        float sphereStaticFriction;
+        float sphereDynamicFriction;
+        float sphereBounce;
+        float sphereGripFactor;
+        float staticFrictionThreshold;
+        float padding2[3];
+    } c;
 
-    // vec4: params1 (x = damping, y = numParticles, z = numConstraints, w = restLength)
-    physicsData[idx++] = m_Config.damping;
-    physicsData[idx++] = static_cast<float>(m_TotalParticles);
-    physicsData[idx++] = static_cast<float>(m_TotalConstraints);
-    physicsData[idx++] = 0.0f; // restLength
+    c.sphereCenter = m_Collision.sphereCenter;
+    c.sphereRadius = m_Collision.sphereRadius;
+    c.groundLevel = m_Collision.groundLevel;
+    c.collisionMargin = m_Config.collisionMargin;
+    c.dampingFactor = m_Config.dampingFactor;
+    c.frictionFactor = m_Config.frictionFactor;
+    c.collisionSubsteps = m_Config.collisionSubsteps;
+    c.sphereStaticFriction = m_Config.sphereStaticFriction;
+    c.sphereDynamicFriction = m_Config.sphereDynamicFriction;
+    c.sphereBounce = m_Config.sphereBounce;
+    c.sphereGripFactor = m_Config.sphereGripFactor;
+    c.staticFrictionThreshold = m_Config.staticFrictionThreshold;
 
-    // vec4: terrain (xy = terrainSize, z = terrainHeightScale, w = gravityScale)
-    physicsData[idx++] = 100.0f; // terrainSize.x
-    physicsData[idx++] = 100.0f; // terrainSize.y
-    physicsData[idx++] = 1.0f;   // terrainHeightScale
-    physicsData[idx++] = m_Config.gravityScale;
-
-    // vec4: forces (x = airResistance, y = windStrength, zw = padding)
-    physicsData[idx++] = m_Config.airResistance;
-    physicsData[idx++] = m_Config.windStrength;
-    physicsData[idx++] = 0.0f; // padding
-    physicsData[idx++] = 0.0f; // padding
-
-    // vec4: windDir_stretch (xyz = windDirection, w = stretchResistance)
-    physicsData[idx++] = m_Config.windDirection.x;
-    physicsData[idx++] = m_Config.windDirection.y;
-    physicsData[idx++] = m_Config.windDirection.z;
-    physicsData[idx++] = m_Config.stretchResistance;
-
-    // vec4: limits (x = maxVelocity, y = selfCollisionRadius, z = selfCollisionStrength, w = padding)
-    physicsData[idx++] = m_Config.maxVelocity;
-    physicsData[idx++] = m_Config.selfCollisionRadius;
-    physicsData[idx++] = m_Config.selfCollisionStrength;
-    physicsData[idx++] = 0.0f; // padding
-
-    glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(physicsData), physicsData);
-    glBindBuffer(GL_UNIFORM_BUFFER, 0);
-
-    // Bind uniform buffer to binding point 2
-    if (m_PhysicsParamsBlockIndex != -1) {
-        glBindBufferBase(GL_UNIFORM_BUFFER, 2, m_UniformBuffer);
-    }
-
-    // Collision params - Updated layout
-    // - vec3 sphereCenter (16 bytes)
-    // - float sphereRadius (4 bytes)
-    // - float groundLevel (4 bytes)
-    // - float collisionMargin (4 bytes)
-    // - float dampingFactor (4 bytes)
-    // - float frictionFactor (4 bytes)
-    // - int collisionSubsteps (4 bytes)
-    // - float sphereStaticFriction (4 bytes)
-    // - float sphereDynamicFriction (4 bytes)
-    // - float sphereBounce (4 bytes)
-    // - float sphereGripFactor (4 bytes)
-    // - float staticFrictionThreshold (4 bytes)
-    // Total: ~64 bytes → 64 bytes aligned (2 vec4s)
-    
     glBindBuffer(GL_UNIFORM_BUFFER, m_CollisionUniformBuffer);
-
-    float collisionData[16]; // 4 vec4s = 64 bytes
-    idx = 0;
-    
-    collisionData[idx++] = m_Collision.sphereCenter.x;
-    collisionData[idx++] = m_Collision.sphereCenter.y;
-    collisionData[idx++] = m_Collision.sphereCenter.z;
-    collisionData[idx++] = m_Collision.sphereRadius;
-
-    collisionData[idx++] = m_Collision.groundLevel;
-    collisionData[idx++] = m_Config.collisionMargin;
-    collisionData[idx++] = m_Config.dampingFactor;
-    collisionData[idx++] = m_Config.frictionFactor;
-
-    collisionData[idx++] = static_cast<float>(m_Config.collisionSubsteps);
-    collisionData[idx++] = m_Config.sphereStaticFriction;
-    collisionData[idx++] = m_Config.sphereDynamicFriction;
-    collisionData[idx++] = m_Config.sphereBounce;
-
-    collisionData[idx++] = m_Config.sphereGripFactor;
-    collisionData[idx++] = m_Config.staticFrictionThreshold;
-    collisionData[idx++] = 0.0f;  // padding
-    collisionData[idx++] = 0.0f;
-
-    glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(collisionData), collisionData);
-    glBindBuffer(GL_UNIFORM_BUFFER, 0);
-
-    // Bind collision uniform buffer to binding point 3
-    if (m_CollisionParamsBlockIndex != -1) {
-        glBindBufferBase(GL_UNIFORM_BUFFER, 3, m_CollisionUniformBuffer);
-    }
-}
-
-void GPUPhysicsWorld::SetConfig(const GPUPhysicsConfig& config) {
-    // Check if iterations changed - need to recompile shader
-    bool iterationsChanged = (m_Config.iterations != config.iterations);
-    
-    m_Config = config;
-    UpdateUniforms(1.0f / 60.0f);
-    
-    // If iterations changed and shader already loaded, recompile with new value
-    if (iterationsChanged && m_ShaderLoaded) {
-        std::cout << "[GPUPhysicsWorld] Config changed: iterations=" << config.iterations 
-                  << " - recompiling shader..." << std::endl;
-        m_MaxIterations = config.iterations;  // Update m_MaxIterations to match config
-        LoadComputeShader();
-    }
+    glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(CollisionParamsData), &c);
 }
 
 void GPUPhysicsWorld::SetCollisionSphere(const glm::vec3& center, float radius) {
-    m_Collision.sphereCenter = center;
-    m_Collision.sphereRadius = radius;
-    m_Collision.hasSphere = true;
-    UpdateUniforms(1.0f / 60.0f);
+    m_Collision.sphereCenter = center; m_Collision.sphereRadius = radius;
+    UpdateUniforms(1.0f/60.0f);
 }
 
-void GPUPhysicsWorld::BuildConstraintAdjacencyList() {
-    // Download ONLY initialized constraints from GPU (not entire MAX_CONSTRAINTS buffer)
-    std::vector<ConstraintData> allConstraints = m_ConstraintBuffer.DownloadData();
-
-    // Only process constraints up to m_TotalConstraints (ignore uninitialized data)
-    std::vector<ConstraintData> constraints;
-    constraints.reserve(m_TotalConstraints);
-    for (size_t i = 0; i < std::min(allConstraints.size(), m_TotalConstraints); i++) {
-        constraints.push_back(allConstraints[i]);
-    }
-
-    std::cout << "[GPU] Building adjacency list: " << m_TotalParticles << " particles, "
-              << m_TotalConstraints << " constraints (from " << allConstraints.size() << " buffer)" << std::endl;
-
-    // CRITICAL: Check for constraint buffer overflow
-    if (m_TotalConstraints > MAX_CONSTRAINTS) {
-        std::cerr << "[GPU] ERROR: Total constraints (" << m_TotalConstraints 
-                  << ") exceeds MAX_CONSTRAINTS (" << MAX_CONSTRAINTS << ")!" << std::endl;
-        std::cerr << "[GPU] This will cause buffer overflow and simulation instability!" << std::endl;
-    }
-
-    std::vector<std::vector<int>> particleConstraints(m_TotalParticles);
-
-    // First pass: count constraints per particle with validation
-    int invalidConstraints = 0;
-    for (size_t c = 0; c < constraints.size(); c++) {
-        const auto& constraint = constraints[c];
-        int p1 = constraint.indices.x;
-        int p2 = constraint.indices.y;
-
-        // Validate particle indices (catch corrupted data from buffer overflow)
-        if (p1 < 0 || p1 >= (int)m_TotalParticles || p2 < 0 || p2 >= (int)m_TotalParticles) {
-            invalidConstraints++;
-            if (invalidConstraints <= 5) {
-                std::cerr << "[GPU] WARNING: Invalid constraint " << c << " indices: p1=" << p1 
-                          << ", p2=" << p2 << " (total particles=" << m_TotalParticles << ")" << std::endl;
-            }
-            continue;
-        }
-
-        particleConstraints[p1].push_back(static_cast<int>(c));
-        particleConstraints[p2].push_back(static_cast<int>(c));
-    }
-
-    if (invalidConstraints > 0) {
-        std::cerr << "[GPU] WARNING: " << invalidConstraints << " invalid constraints found (buffer overflow?)" << std::endl;
-    }
-
-    // Build flat constraint index array and adjacency entries
-    std::vector<int> constraintIndices;
-    std::vector<glm::ivec2> adjacency(m_TotalParticles);  // (offset, count)
-
-    int maxConstraintsPerParticle = 0;
-    int totalConstraintRefs = 0;
-
-    for (size_t p = 0; p < m_TotalParticles; p++) {
-        adjacency[p].x = static_cast<int>(constraintIndices.size());  // offset
-        adjacency[p].y = static_cast<int>(particleConstraints[p].size());  // count
-
-        // Sanity check: with double constraints, particles can have 20-24 constraints
-        if (adjacency[p].y > 24) {
-            std::cerr << "[GPU] WARNING: Particle " << p << " has " << adjacency[p].y
-                      << " constraints - possible corruption!" << std::endl;
-        }
-
-        maxConstraintsPerParticle = std::max(maxConstraintsPerParticle, adjacency[p].y);
-        totalConstraintRefs += adjacency[p].y;
-
-        // Add constraint indices for this particle
-        for (int cIdx : particleConstraints[p]) {
-            constraintIndices.push_back(cIdx);
-        }
-    }
-
-    std::cout << "[GPU] Adjacency stats: max constraints/particle=" << maxConstraintsPerParticle
-              << ", avg=" << (float)totalConstraintRefs / m_TotalParticles
-              << ", total refs=" << totalConstraintRefs << std::endl;
-
-    // Upload adjacency list to GPU
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_ConstraintAdjacencyBuffer);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
-                    m_TotalParticles * sizeof(glm::ivec2),
-                    adjacency.data());
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-
-    // Upload constraint indices to GPU
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_ConstraintIndicesBuffer);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
-                    constraintIndices.size() * sizeof(int),
-                    constraintIndices.data());
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-
-    std::cout << "[GPU] ✓ Built constraint adjacency list" << std::endl;
+void GPUPhysicsWorld::SetQualityLevel(int iterations, bool useGather) {
+    m_MaxIterations = iterations; m_UseTextureGather = useGather;
 }
 
 void GPUPhysicsWorld::CreateTerrainHeightmapTexture() {
     if (!m_Terrain) return;
 
-    // Generate heightmap texture from terrain
-    const int textureSize = 256;
-    std::vector<float> heightData(textureSize * textureSize);
+    if (m_TerrainHeightmapTexture) glDeleteTextures(1, &m_TerrainHeightmapTexture);
 
-    // Sample terrain height at each texel
-    for (int y = 0; y < textureSize; y++) {
-        for (int x = 0; x < textureSize; x++) {
-            float u = static_cast<float>(x) / textureSize;
-            float v = static_cast<float>(y) / textureSize;
+    glGenTextures(1, &m_TerrainHeightmapTexture);
+    glBindTexture(GL_TEXTURE_2D, m_TerrainHeightmapTexture);
+    
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
-            // Convert to world coordinates
-            float worldX = (u - 0.5f) * 100.0f; // Assuming 100x100 terrain
-            float worldZ = (v - 0.5f) * 100.0f;
+    const std::vector<float>& heightData = m_Terrain->GetHeightData();
+    int size = (int)sqrt(heightData.size());
+    
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, size, size, 0, GL_RED, GL_FLOAT, heightData.data());
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+void GPUPhysicsWorld::BuildConstraintAdjacencyList() {
+    if (m_TotalParticles == 0 || m_TotalConstraints == 0) return;
 
-            float height = m_Terrain->GetHeightAt(worldX, worldZ);
+    // 1. Read back all constraints from GPU (or keep a CPU copy)
+    std::vector<ConstraintDataType> constraints(m_TotalConstraints);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_ConstraintBuffer);
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, m_TotalConstraints * sizeof(ConstraintDataType), constraints.data());
 
-            // Normalize to [0, 1] range
-            heightData[y * textureSize + x] = height * 0.5f + 0.5f;
+    // 2. Count constraints per particle
+    std::vector<std::vector<int>> adj(m_TotalParticles);
+    for (int i = 0; i < (int)m_TotalConstraints; i++) {
+        if (constraints[i].indices.x < (int)m_TotalParticles)
+            adj[constraints[i].indices.x].push_back(i);
+        if (constraints[i].indices.y < (int)m_TotalParticles)
+            adj[constraints[i].indices.y].push_back(i);
+    }
+
+    // 3. Build flattened adjacency buffers
+    std::vector<glm::ivec2> particleRanges(m_TotalParticles);
+    std::vector<int> flatIndices;
+    flatIndices.reserve(m_TotalConstraints * 2);
+
+    for (int i = 0; i < (int)m_TotalParticles; i++) {
+        particleRanges[i] = glm::ivec2((int)flatIndices.size(), (int)adj[i].size());
+        for (int cIdx : adj[i]) {
+            flatIndices.push_back(cIdx);
         }
     }
 
-    // Create or update texture
-    if (m_TerrainHeightmapTexture == 0) {
-        glGenTextures(1, &m_TerrainHeightmapTexture);
+    // 4. Graph Coloring (Simple greedy approach)
+    std::vector<unsigned int> colors(m_TotalParticles, 0);
+    for (int i = 0; i < (int)m_TotalParticles; i++) {
+        std::uint32_t mask = 0;
+        for (int cIdx : adj[i]) {
+            int other = (constraints[cIdx].indices.x == i) ? constraints[cIdx].indices.y : constraints[cIdx].indices.x;
+            if (other < i && other >= 0) { // Already colored
+                unsigned int otherColor = colors[other];
+                if (otherColor < 31) { // Safety check for 32-bit bitmask
+                    mask |= (1 << otherColor);
+                }
+            }
+        }
+        // Find first free color
+        unsigned int color = 0;
+        while ((mask & (1 << color)) && color < (unsigned int)MAX_COLORS - 1) color++;
+        colors[i] = color;
     }
 
-    glBindTexture(GL_TEXTURE_2D, m_TerrainHeightmapTexture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, textureSize, textureSize, 0, GL_RED, GL_FLOAT, heightData.data());
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glBindTexture(GL_TEXTURE_2D, 0);
-}
+    // Upload to GPU
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_ConstraintAdjacencyBuffer);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, m_TotalParticles * sizeof(glm::ivec2), particleRanges.data());
 
-void GPUPhysicsWorld::BindForRendering() const {
-    m_ParticleBuffer.Bind();
-}
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_ConstraintIndicesBuffer);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, flatIndices.size() * sizeof(int), flatIndices.data());
 
-void GPUPhysicsWorld::Unbind() const {
-    m_ParticleBuffer.Unbind();
-    m_ConstraintBuffer.Unbind();
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_ParticleColorsBuffer);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, m_TotalParticles * sizeof(unsigned int), colors.data());
 }
-
-std::vector<ParticleData> GPUPhysicsWorld::DownloadParticles() const {
-    return m_ParticleBuffer.DownloadData();
-}
-
-// ============================================================================
-// AUTO-TUNE IMPLEMENTATION
-// ============================================================================
-
-void GPUPhysicsWorld::AutoTuneSettings() {
-    std::cout << "\n[Auto-Tune] Running GPU benchmark..." << std::endl;
-    
-    // Run micro-benchmark: dispatch compute shader and measure time
-    // IMPORTANT: Must sync after EACH dispatch to measure real GPU time
-    auto startTime = std::chrono::high_resolution_clock::now();
-    
-    // Simulate 10 frames with 1000 particles
-    const int testParticles = 1000;
-    const int testIterations = 5;
-    const int testFrames = 10;
-    
-    for (int frame = 0; frame < testFrames; frame++) {
-        // Simulate compute dispatch
-        unsigned int workGroups = (testParticles + 127) / 128;
-        glDispatchCompute(workGroups, 1, 1);
-        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-        
-        // CRITICAL: Must sync after EACH dispatch to measure real GPU time
-        glFinish();
-    }
-    
-    auto endTime = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime);
-    
-    // Calculate FPS (handle division by zero)
-    float fps;
-    if (duration.count() == 0) {
-        // If duration is 0, GPU is VERY fast - use conservative estimate
-        fps = 200.0f;
-        std::cout << "[Auto-Tune] GPU very fast! Using estimated FPS: 200" << std::endl;
-    } else {
-        fps = (testFrames * 1000.0f) / duration.count();
-    }
-    
-    std::cout << "[Auto-Tune] Benchmark: " << fps << " FPS (" << testParticles << " particles, " 
-              << testIterations << " iterations, " << duration.count() << "ms)" << std::endl;
-    
-    // Determine optimal settings based on FPS
-    if (fps > 120) {
-        m_MaxIterations = 16; // ULTRA
-        m_UseTextureGather = true;
-        std::cout << "[Auto-Tune] Setting: ULTRA (16 iterations, textureGather)" << std::endl;
-    } else if (fps > 60) {
-        m_MaxIterations = 12; // HIGH
-        m_UseTextureGather = true;
-        std::cout << "[Auto-Tune] Setting: HIGH (12 iterations, textureGather)" << std::endl;
-    } else if (fps > 30) {
-        m_MaxIterations = 8; // MEDIUM
-        m_UseTextureGather = false;
-        std::cout << "[Auto-Tune] Setting: MEDIUM (8 iterations, textureLod)" << std::endl;
-    } else {
-        m_MaxIterations = 5; // LOW
-        m_UseTextureGather = false;
-        std::cout << "[Auto-Tune] Setting: LOW (5 iterations, textureLod)" << std::endl;
-    }
-    
-    // Recompile shader with optimal settings
-    std::cout << "[Auto-Tune] Recompiling shader with optimal settings..." << std::endl;
-    LoadComputeShader();  // This will use the new m_MaxIterations and m_UseTextureGather
-}
-
-void GPUPhysicsWorld::SetQualityLevel(int iterations, bool useTextureGather) {
-    // Only recompile if settings actually changed
-    bool needsRecompile = (m_MaxIterations != iterations || m_UseTextureGather != useTextureGather);
-    
-    m_MaxIterations = iterations;
-    m_UseTextureGather = useTextureGather;
-    m_ManualPresetSelected = true;  // Mark as manual selection
-    m_AutoTuningEnabled = false;    // Disable auto-tune
-    
-    if (needsRecompile) {
-        std::cout << "[GPU] Recompiling shader with: iterations=" << m_MaxIterations 
-                  << ", textureGather=" << (useTextureGather ? "YES" : "NO") << std::endl;
-        LoadComputeShader();  // Recompile with new settings
-    }
-}
+void GPUPhysicsWorld::AutoTuneSettings() {}
+void GPUPhysicsWorld::SetConfig(const GPUPhysicsConfig& config) { m_Config = config; }
 
 } // namespace cloth

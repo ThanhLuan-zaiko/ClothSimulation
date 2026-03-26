@@ -36,15 +36,15 @@ Window::Window(const WindowProps& props) : m_Props(props) {
     }
 
     glfwMakeContextCurrent(m_Window);
-    // Disable vsync for smoother rendering
+    // Disable vsync for better performance (can enable if needed)
     glfwSwapInterval(0);
-    
+
 #ifdef _WIN32
     // Extra hide on Windows to prevent any flash
     HWND hwnd = glfwGetWin32Window(m_Window);
     ShowWindow(hwnd, SW_HIDE);
 #endif
-    
+
     // Window will be shown after first frame is rendered in Application::Run()
 }
 

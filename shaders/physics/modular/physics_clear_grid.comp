@@ -1,0 +1,8 @@
+#include "physics_common.glsl"
+
+void main() {
+    uint globalIdx = gl_GlobalInvocationID.x;
+    if (globalIdx < GRID_SIZE) {
+        gridHead[globalIdx] = 0xFFFFFFFF;
+    }
+}

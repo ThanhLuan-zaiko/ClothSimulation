@@ -20,16 +20,20 @@ void HandleInput(AppState& state, float deltaTime) {
     // 2. Mouse rotation
     double mouseX = Input::GetMouseX();
     double mouseY = Input::GetMouseY();
+    
     if (Input::IsMouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT)) {
-        if (state.mousePressed) {
-            float deltaX = static_cast<float>(mouseX - state.lastMouseX);
-            float deltaY = static_cast<float>(mouseY - state.lastMouseY);
-            state.camera.Rotate(deltaX * 0.15f, -deltaY * 0.15f);
-        }
+        // Calculate delta from last frame
+        float deltaX = static_cast<float>(mouseX - state.lastMouseX);
+        float deltaY = static_cast<float>(mouseY - state.lastMouseY);
+        
+        // Rotate camera based on mouse movement
+        state.camera.Rotate(deltaX * 0.15f, -deltaY * 0.15f);
         state.mousePressed = true;
     } else {
         state.mousePressed = false;
     }
+    
+    // Update last mouse position
     state.lastMouseX = mouseX;
     state.lastMouseY = mouseY;
 

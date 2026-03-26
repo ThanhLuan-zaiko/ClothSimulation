@@ -1,0 +1,100 @@
+#include "physics_common.glsl"
+
+layout(std140, binding = 8) uniform CollisionParams {
+    vec3 sphereCenter;
+    float sphereRadius;
+    float groundLevel;
+    float collisionMargin;
+    float dampingFactor;
+    float frictionFactor;
+    int collisionSubsteps;
+    float sphereStaticFriction;
+    float sphereDynamicFriction;
+    float sphereBounce;
+    float sphereGripFactor;
+    float staticFrictionThreshold;
+};
+
+// Terrain heightmap texture - bound to GL_TEXTURE0
+uniform sampler2D terrainHeightmap;
+
+// Use shared memory for local workgroup to reduce global memory traffic
+shared vec3 localPositions[128];
+
+float getTerrainHeight(float x, float z) {
+    float u = (x + terrainSize.x * 0.5f) / terrainSize.x;
+    float v = (z + terrainSize.y * 0.5f) / terrainSize.y;
+    float height = textureLod(terrainHeightmap, vec2(clamp(u, 0.0, 1.0), clamp(v, 0.0, 1.0)), 0.0).r;
+    return (height - 0.5f) * terrainHeightScale;
+}
+
+void main() {
+    uint globalIdx = gl_GlobalInvocationID.x;
+    uint localIdx = gl_LocalInvocationID.x;
+
+    if (globalIdx >= uint(numParticles)) return;
+
+    // EARLY RETURN before any shared memory access - safe without barrier
+    if (pinnedFlags[globalIdx] >= 0.5f) return;
+
+    // Cache position in shared memory for faster access
+    localPositions[localIdx] = positions[globalIdx].xyz;
+    
+    // Use subgroup barrier instead of workgroup barrier (safer on Intel GPU)
+    subgroupBarrier();
+
+    vec3 pos = localPositions[localIdx];
+    vec3 prevPos = prevPositions[globalIdx].xyz;
+    vec3 velocity = (pos - prevPos) / deltaTime;
+
+    // 1. Sphere Collision
+    if (sphereRadius > 0.0f) {
+        vec3 toSphere = pos - sphereCenter;
+        float dist = length(toSphere);
+        float minDist = sphereRadius + collisionMargin;
+        if (dist < minDist && dist > EPSILON) {
+            vec3 normal = toSphere / dist;
+            pos = sphereCenter + normal * minDist;
+        }
+    }
+
+    // 2. Terrain Collision
+    float terrainHeight = getTerrainHeight(pos.x, pos.z);
+    if (pos.y < terrainHeight + collisionMargin) {
+        pos.y = terrainHeight + collisionMargin;
+    }
+
+    // 3. Ground Level Collision
+    if (pos.y < groundLevel + collisionMargin) {
+        pos.y = groundLevel + collisionMargin;
+    }
+
+    // 4. Optimized Grid-based Self-Collision
+    // Note: This still uses global memory but with spatial hashing
+    ivec3 centerCell = ivec3(floor(pos / CELL_SIZE));
+    for (int z = -1; z <= 1; z++) {
+        for (int y = -1; y <= 1; y++) {
+            for (int x = -1; x <= 1; x++) {
+                uint h = (uint(centerCell.x+x) * 73856093u ^ uint(centerCell.y+y) * 19349663u ^ uint(centerCell.z+z) * 83492791u) & GRID_MASK;
+                uint currIdx = gridHead[h];
+                for (int iterations = 0; iterations < 16 && currIdx != 0xFFFFFFFF; iterations++) {
+                    if (currIdx >= uint(numParticles)) break;
+                    if (currIdx != globalIdx) {
+                        vec3 otherPos = positions[currIdx].xyz;
+                        vec3 delta = pos - otherPos;
+                        float distSq = dot(delta, delta);
+                        if (distSq < selfCollisionRadius * selfCollisionRadius && distSq > EPSILON * EPSILON) {
+                            float dist = sqrt(distSq);
+                            pos += (delta / dist) * (selfCollisionRadius - dist) * 0.5f;
+                        }
+                    }
+                    currIdx = gridNext[currIdx];
+                }
+            }
+        }
+    }
+
+    // Write back to global memory
+    positions[globalIdx].xyz = pos;
+    prevPositions[globalIdx].xyz = pos - velocity * deltaTime;
+}

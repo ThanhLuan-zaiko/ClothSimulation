@@ -52,15 +52,15 @@ void Application::Run() {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
-    
+
     // Call render callback to render full scene
     if (m_RenderCallback) {
         m_RenderCallback();
     }
-    
+
     // Swap to display the rendered scene
     glfwSwapBuffers(m_Window->GetNativeWindow());
-    
+
     // NOW show the window (on Windows, use API for smoother show)
 #ifdef _WIN32
     HWND hwnd = glfwGetWin32Window(m_Window->GetNativeWindow());
@@ -71,7 +71,7 @@ void Application::Run() {
 #else
     glfwShowWindow(m_Window->GetNativeWindow());
 #endif
-    
+
     while (m_Running && !m_Window->ShouldClose()) {
         // Calculate delta time
         float currentFrame = static_cast<float>(glfwGetTime());
@@ -103,7 +103,6 @@ void Application::Run() {
 
         // Swap buffers and poll events
         glfwSwapBuffers(m_Window->GetNativeWindow());
-        
         glfwPollEvents();
     }
 }

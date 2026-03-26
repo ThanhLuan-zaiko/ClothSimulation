@@ -199,73 +199,61 @@ int main() {
     Cloth* dummyCloth1 = new Cloth(state.physicsWorld, clothConfig1);
     ClothMesh* clothMesh1 = new ClothMesh(*dummyCloth1);
     clothMesh1->SetGPUBased(true);
-    clothMesh1->SetParticleBuffer(&state.physicsWorld.GetParticleBuffer(), cloth1Offset);  // offset=0 now
+    clothMesh1->SetParticleBufferID(state.physicsWorld.GetPosBuffer());  // Updated to use buffer ID
+    clothMesh1->SetParticleOffset(cloth1Offset); // Set the correct offset!
     state.cloths.push_back(dummyCloth1);
     state.clothMeshes.push_back(clothMesh1);
     state.clothDropTimers.push_back(0.0f);
     state.clothDropped.push_back(false);
     size_t cloth1Count = (clothConfig1.widthSegments + 1) * (clothConfig1.heightSegments + 1);
     state.clothParticleCounts.push_back(cloth1Count);
-    state.clothParticleOffsets.push_back(cloth1Offset);  // Track offset (now 0)
+    state.clothParticleOffsets.push_back(cloth1Offset);
     
-    // Cloth 2 - Second to drop (CENTERED over sphere at (0,10,0))
+    // Cloth 2
     ClothConfig clothConfig2;
     clothConfig2.widthSegments = state.gpuInfo.clothResolution[1];
     clothConfig2.heightSegments = state.gpuInfo.clothResolution[1];
     clothConfig2.segmentLength = 0.12f;
-    
-    // Calculate cloth dimensions
-    float clothWidth2 = clothConfig2.widthSegments * clothConfig2.segmentLength;
-    float clothHeight2 = clothConfig2.heightSegments * clothConfig2.segmentLength;
-    
-    // Center the cloth over sphere
-    clothConfig2.startX = -clothWidth2 * 0.5f;   // Center X
-    clothConfig2.startY = 22.0f;   // Higher than cloth 1
-    clothConfig2.startZ = -clothHeight2 * 0.5f;   // Center Z
+    clothConfig2.startX = -clothConfig2.widthSegments * clothConfig2.segmentLength * 0.5f;
+    clothConfig2.startY = 22.0f;
+    clothConfig2.startZ = -clothConfig2.heightSegments * clothConfig2.segmentLength * 0.5f;
 
     size_t cloth2Offset = state.physicsWorld.InitializeCloth(
         clothConfig2.widthSegments, clothConfig2.heightSegments,
         clothConfig2.startX, clothConfig2.startY, clothConfig2.startZ,
-        clothConfig2.segmentLength, true  // Start pinned
-    );
+        clothConfig2.segmentLength, true);
 
     Cloth* dummyCloth2 = new Cloth(state.physicsWorld, clothConfig2);
     ClothMesh* clothMesh2 = new ClothMesh(*dummyCloth2);
     clothMesh2->SetGPUBased(true);
-    clothMesh2->SetParticleBuffer(&state.physicsWorld.GetParticleBuffer(), cloth2Offset);  // Use offset from InitializeCloth
+    clothMesh2->SetParticleBufferID(state.physicsWorld.GetPosBuffer());
+    clothMesh2->SetParticleOffset(cloth2Offset); // Set the correct offset!
     state.cloths.push_back(dummyCloth2);
     state.clothMeshes.push_back(clothMesh2);
     state.clothDropTimers.push_back(0.0f);
     state.clothDropped.push_back(false);
-    size_t cloth2Count = (clothConfig2.widthSegments + 1) * (clothConfig2.heightSegments + 1);
-    state.clothParticleCounts.push_back(cloth2Count);
-    state.clothParticleOffsets.push_back(cloth2Offset);  // Track offset
+    state.clothParticleCounts.push_back((clothConfig2.widthSegments + 1) * (clothConfig2.heightSegments + 1));
+    state.clothParticleOffsets.push_back(cloth2Offset);
     
-    // Cloth 3 - Third to drop (CENTERED over sphere at (0,10,0))
+    // Cloth 3
     ClothConfig clothConfig3;
     clothConfig3.widthSegments = state.gpuInfo.clothResolution[2];
     clothConfig3.heightSegments = state.gpuInfo.clothResolution[2];
     clothConfig3.segmentLength = 0.12f;
-    
-    // Calculate cloth dimensions
-    float clothWidth3 = clothConfig3.widthSegments * clothConfig3.segmentLength;
-    float clothHeight3 = clothConfig3.heightSegments * clothConfig3.segmentLength;
-    
-    // Center the cloth over sphere
-    clothConfig3.startX = -clothWidth3 * 0.5f;   // Center X
-    clothConfig3.startY = 26.0f;   // Highest
-    clothConfig3.startZ = -clothHeight3 * 0.5f;   // Center Z
+    clothConfig3.startX = -clothConfig3.widthSegments * clothConfig3.segmentLength * 0.5f;
+    clothConfig3.startY = 26.0f;
+    clothConfig3.startZ = -clothConfig3.heightSegments * clothConfig3.segmentLength * 0.5f;
 
     size_t cloth3Offset = state.physicsWorld.InitializeCloth(
         clothConfig3.widthSegments, clothConfig3.heightSegments,
         clothConfig3.startX, clothConfig3.startY, clothConfig3.startZ,
-        clothConfig3.segmentLength, true  // Start pinned
-    );
+        clothConfig3.segmentLength, true);
 
     Cloth* dummyCloth3 = new Cloth(state.physicsWorld, clothConfig3);
     ClothMesh* clothMesh3 = new ClothMesh(*dummyCloth3);
     clothMesh3->SetGPUBased(true);
-    clothMesh3->SetParticleBuffer(&state.physicsWorld.GetParticleBuffer(), cloth3Offset);  // Use offset from InitializeCloth
+    clothMesh3->SetParticleBufferID(state.physicsWorld.GetPosBuffer());
+    clothMesh3->SetParticleOffset(cloth3Offset); // Set the correct offset!
     state.cloths.push_back(dummyCloth3);
     state.clothMeshes.push_back(clothMesh3);
     state.clothDropTimers.push_back(0.0f);
