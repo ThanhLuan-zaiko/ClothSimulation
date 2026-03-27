@@ -14,28 +14,52 @@ void main() {
 
     vec3 myPos = positions[globalIdx].xyz;
     ivec2 range = particleConstraints[globalIdx];
-    
+
+    // Accumulate corrections for better stability
+    vec3 totalCorrection = vec3(0.0);
+    int constraintCount = 0;
+
     for (int i = 0; i < range.y; i++) {
         int cIdx = constraintIndices[range.x + i];
         ConstraintDataType c = constraints[cIdx];
-        
+
         int otherIdx = (c.indices.x == int(globalIdx)) ? c.indices.y : c.indices.x;
         vec3 otherPos = positions[otherIdx].xyz;
         vec3 delta = otherPos - myPos;
         float dist = length(delta);
-        
+
         if (dist > EPSILON) {
             float restLen = c.params.x;
             float stiffness = c.params.y;
+
+            // Calculate constraint violation
+            float diff = (dist - restLen);
+            float compliance = 1.0 - stiffness;
             
-            float diff = (dist - restLen) / dist;
+            // Apply stiffness with stability factor
+            // Higher stiffness for stretch, lower for bend (already encoded in constraint params)
+            float correctionMag = diff / dist;
             
-            // Adjust position towards constraint goal
-            // We use 0.5 because we assume both particles are non-pinned and have same mass
-            // In a better solver, we'd account for mass and other particle's pinned status
-            myPos += delta * (diff * stiffness * 0.5f);
+            // Stability: limit maximum correction per iteration
+            float maxCorrection = 0.15; // Max 15% correction per iteration
+            correctionMag = clamp(correctionMag, -maxCorrection, maxCorrection);
+            
+            // Apply correction with stiffness
+            vec3 correction = delta * (correctionMag * stiffness * 0.5f);
+            
+            // Accumulate for batched application (better stability)
+            totalCorrection += correction;
+            constraintCount++;
         }
     }
-    
+
+    // Apply accumulated correction with damping for stability
+    if (constraintCount > 0) {
+        // Average correction with slight over-relaxation for faster convergence
+        float relaxation = 1.0 + (float(MAX_ITERATIONS) / 16.0) * 0.1;
+        relaxation = clamp(relaxation, 1.0, 1.2);
+        myPos += totalCorrection * relaxation / float(constraintCount);
+    }
+
     positions[globalIdx].xyz = myPos;
 }

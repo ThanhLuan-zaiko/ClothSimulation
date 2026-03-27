@@ -28,27 +28,28 @@ struct ConstraintDataType {
 
 struct GPUPhysicsConfig {
     glm::vec3 gravity = glm::vec3(0.0f, -9.81f, 0.0f);
-    float damping = 0.95f;
-    int iterations = 8;
-    float collisionMargin = 0.02f;
-    float dampingFactor = 0.85f;
-    float frictionFactor = 0.92f;
-    int collisionSubsteps = 8;
-    
-    float gravityScale = 3.5f;
-    float airResistance = 0.992f;
-    float windStrength = 0.0f;
+    float damping = 0.98f;                // Velocity damping (higher = less air resistance)
+    int iterations = 12;                  // Constraint iterations (more = stiffer cloth)
+    float collisionMargin = 0.03f;        // Collision skin thickness
+    float dampingFactor = 0.90f;          // Energy loss on collision
+    float frictionFactor = 0.95f;         // Ground friction coefficient
+    int collisionSubsteps = 8;            // Physics substeps for collision
+
+    float gravityScale = 4.0f;            // Gravity multiplier for Verlet
+    float airResistance = 0.995f;         // Velocity damping per frame
+    float windStrength = 0.0f;            // Wind force magnitude
     glm::vec3 windDirection = glm::vec3(1.0f, 0.0f, 0.0f);
-    float stretchResistance = 0.8f;
-    float maxVelocity = 35.0f;
-    float selfCollisionRadius = 0.25f;
-    float selfCollisionStrength = 1.20f;
-    
-    float sphereStaticFriction = 0.85f;
-    float sphereDynamicFriction = 0.92f;
-    float sphereBounce = 0.10f;
-    float sphereGripFactor = 0.3f;
-    float staticFrictionThreshold = 0.5f;
+    float stretchResistance = 0.9f;       // Resistance to stretching
+    float maxVelocity = 50.0f;            // Max particle velocity (m/s)
+    float selfCollisionRadius = 0.30f;    // Particle collision radius
+    float selfCollisionStrength = 1.5f;   // Collision repulsion strength
+
+    // Sphere collision parameters
+    float sphereStaticFriction = 0.92f;   // Static friction (when at rest)
+    float sphereDynamicFriction = 0.88f;  // Dynamic friction (when moving)
+    float sphereBounce = 0.05f;           // Restitution coefficient (0 = no bounce)
+    float sphereGripFactor = 0.5f;        // Surface grip/adhesion
+    float staticFrictionThreshold = 0.8f; // Velocity threshold for static friction
 };
 
 struct CollisionParams {

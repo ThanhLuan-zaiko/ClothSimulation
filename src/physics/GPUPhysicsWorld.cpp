@@ -166,13 +166,25 @@ bool GPUPhysicsWorld::LoadComputeShaders() {
 
     m_IntegrateShader = Shader::CreateComputeShaderFromSource(preprocess("shaders/physics/modular/physics_integrate.comp"));
     if (!m_IntegrateShader.GetID()) return false;
-    
+
     m_SolveShader = Shader::CreateComputeShaderFromSource(preprocess("shaders/physics/modular/physics_solve.comp"));
     if (!m_SolveShader.GetID()) return false;
-    
+
     m_CollideShader = Shader::CreateComputeShaderFromSource(preprocess("shaders/physics/modular/physics_collide.comp"));
     if (!m_CollideShader.GetID()) return false;
     
+    // CRITICAL: Explicitly bind uniform blocks after shader compilation
+    // This is required because layout(binding=X) in GLSL may not be respected by all drivers
+    m_CollideShader.Bind();
+    unsigned int physicsBlock = glGetUniformBlockIndex(m_CollideShader.GetID(), "PhysicsParams");
+    unsigned int collisionBlock = glGetUniformBlockIndex(m_CollideShader.GetID(), "CollisionParams");
+    if (physicsBlock != GL_INVALID_INDEX) {
+        glUniformBlockBinding(m_CollideShader.GetID(), physicsBlock, 2);
+    }
+    if (collisionBlock != GL_INVALID_INDEX) {
+        glUniformBlockBinding(m_CollideShader.GetID(), collisionBlock, 8);
+    }
+
     m_ClearGridShader = Shader::CreateComputeShaderFromSource(preprocess("shaders/physics/modular/physics_clear_grid.comp"));
     if (!m_ClearGridShader.GetID()) return false;
 
@@ -184,9 +196,10 @@ size_t GPUPhysicsWorld::InitializeCloth(int width, int height, float sx, float s
     size_t numParticles = (width + 1) * (height + 1);
     unsigned int clothID = (unsigned int)m_ClothCount++;
 
-    const float structuralStiff = 0.95f;
-    const float shearStiff = 0.7f;
-    const float bendStiff = 0.4f;
+    // Improved constraint stiffness values for better stability
+    const float structuralStiff = 1.0f;   // Very high - cloth barely stretches
+    const float shearStiff = 0.85f;       // High - resists shearing
+    const float bendStiff = 0.25f;        // Lower - allows natural bending
 
     std::vector<glm::vec4> pos(numParticles);
     std::vector<glm::vec4> prevPos(numParticles);
@@ -223,15 +236,15 @@ size_t GPUPhysicsWorld::InitializeCloth(int width, int height, float sx, float s
     for (int y = 0; y <= height; y++) {
         for (int x = 0; x <= width; x++) {
             int i = y * (width + 1) + x;
-            // Structural
+            // Structural (horizontal and vertical)
             if (x < width) addConstraint(i, i + 1, structuralStiff);
             if (y < height) addConstraint(i, i + width + 1, structuralStiff);
-            // Shear
+            // Shear (diagonal)
             if (x < width && y < height) {
                 addConstraint(i, i + width + 2, shearStiff);
                 addConstraint(i + 1, i + width + 1, shearStiff);
             }
-            // Bend
+            // Bend (second neighbor)
             if (x < width - 1) addConstraint(i, i + 2, bendStiff);
             if (y < height - 1) addConstraint(i, i + 2 * (width + 1), bendStiff);
         }
@@ -284,7 +297,7 @@ void GPUPhysicsWorld::Update(float deltaTime) {
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, m_PosBuffer);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, m_ConstraintBuffer);
     glBindBufferBase(GL_UNIFORM_BUFFER, 2, m_UniformBuffer);
-    glBindBufferBase(GL_UNIFORM_BUFFER, 8, m_CollisionUniformBuffer);  // Binding 8 for collide shader
+    glBindBufferBase(GL_UNIFORM_BUFFER, 8, m_CollisionUniformBuffer);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, m_PinnedFlagsBuffer);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, m_PrevPosBuffer);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, m_VelBuffer);
@@ -297,13 +310,9 @@ void GPUPhysicsWorld::Update(float deltaTime) {
     if (m_Terrain && m_TerrainHeightmapTexture) {
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, m_TerrainHeightmapTexture);
-        m_CollideShader.SetInt("terrainHeightmap", 0);
     }
 
-    // === TEST: Comment out ALL compute shaders to find the culprit ===
-    // If screen still freezes, problem is NOT in compute shaders
-    
-    // 0. Clear Grid (Separate pass to avoid race conditions)
+    // 0. Clear Grid
     m_ClearGridShader.Bind();
     glDispatchCompute(gridGroups, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
@@ -313,7 +322,7 @@ void GPUPhysicsWorld::Update(float deltaTime) {
     glDispatchCompute(totalGroups, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
-    // 2. Constraint Solving (Graph Coloring Pass)
+    // 2. Constraint Solving
     m_SolveShader.Bind();
     for (int color = 0; color < MAX_COLORS; color++) {
         m_SolveShader.SetInt("current_color", color);
@@ -323,6 +332,8 @@ void GPUPhysicsWorld::Update(float deltaTime) {
 
     // 3. Collision Resolution
     m_CollideShader.Bind();
+    glBindBufferBase(GL_UNIFORM_BUFFER, 2, m_UniformBuffer);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 8, m_CollisionUniformBuffer);
     glDispatchCompute(totalGroups, 1, 1);
 
     // Crucial: Tell GPU that SSBO data will now be used as Vertex Attributes for rendering
@@ -396,7 +407,8 @@ void GPUPhysicsWorld::UpdateUniforms(float deltaTime) {
 }
 
 void GPUPhysicsWorld::SetCollisionSphere(const glm::vec3& center, float radius) {
-    m_Collision.sphereCenter = center; m_Collision.sphereRadius = radius;
+    m_Collision.sphereCenter = center;
+    m_Collision.sphereRadius = radius;
     UpdateUniforms(1.0f/60.0f);
 }
 
