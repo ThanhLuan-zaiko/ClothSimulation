@@ -59,6 +59,10 @@ public:
     // Accessors
     int GetWidthSegments() const { return m_Config.widthSegments; }
     int GetHeightSegments() const { return m_Config.heightSegments; }
+    float GetSegmentLength() const { return m_Config.segmentLength; }
+    float GetStartX() const { return m_Config.startX; }
+    float GetStartY() const { return m_Config.startY; }
+    float GetStartZ() const { return m_Config.startZ; }
 
     // Reset cloth to initial position
     void Reset();

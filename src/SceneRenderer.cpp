@@ -260,6 +260,7 @@ void Render(AppState& state, const Application& app) {
         state.clothShader.SetVec3("u_ViewPos", state.camera.GetPosition());
         state.clothShader.SetBool("u_UseTexture", true);
         state.clothShader.SetInt("u_Wireframe", 0);
+        state.clothShader.SetInt("u_Interactive", state.isInteracting ? 1 : 0);
         state.clothShader.SetVec3("u_Color", glm::vec3(1.0f, 1.0f, 1.0f));
 
         // Ensure correct render states BEFORE rendering cloths

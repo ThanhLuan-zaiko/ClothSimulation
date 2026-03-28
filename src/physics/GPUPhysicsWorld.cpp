@@ -1,4 +1,5 @@
 #include "GPUPhysicsWorld.h"
+#include "AppState.h"
 #include "utils/GPUDetection.h"
 #include "cloth/Cloth.h"
 #include <glad/glad.h>
@@ -13,6 +14,8 @@
 #include <algorithm>
 
 namespace cloth {
+
+extern AppState* g_State;
 
 GPUPhysicsWorld::GPUPhysicsWorld()
     : m_ShadersLoaded(false),
@@ -317,6 +320,34 @@ size_t GPUPhysicsWorld::InitializeCloth(int width, int height, float sx, float s
     return offset;
 }
 
+void GPUPhysicsWorld::ResetCloth(size_t offset, int width, int height, float sx, float sy, float sz, float len, bool pinned, int clothID) {
+    size_t numParticles = (width + 1) * (height + 1);
+    
+    std::vector<glm::vec4> pos(numParticles);
+    std::vector<glm::vec4> prevPos(numParticles);
+    std::vector<glm::vec4> vel(numParticles);
+
+    for (int y = 0; y <= height; ++y) {
+        for (int x = 0; x <= width; ++x) {
+            size_t idx = y * (width + 1) + x;
+            glm::vec3 p(sx + x * len, sy, sz + y * len);
+            pos[idx] = glm::vec4(p, 1.0f);
+            prevPos[idx] = glm::vec4(p, (float)clothID);
+            vel[idx] = glm::vec4(0.0f, 0.0f, 0.0f, pinned ? 1.0f : 0.0f);
+        }
+    }
+
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_PosBuffer);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, offset * sizeof(glm::vec4), numParticles * sizeof(glm::vec4), pos.data());
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_PrevPosBuffer);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, offset * sizeof(glm::vec4), numParticles * sizeof(glm::vec4), prevPos.data());
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_VelBuffer);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, offset * sizeof(glm::vec4), numParticles * sizeof(glm::vec4), vel.data());
+
+    // Reset pinned state
+    SetParticlesPinned(offset, numParticles, pinned);
+}
+
 void GPUPhysicsWorld::SetParticlesPinned(size_t start, size_t count, bool pinned) {
     if (!m_PinnedFlagsBuffer) return;
     std::vector<float> flags(count, pinned ? 1.0f : 0.0f);
@@ -449,6 +480,8 @@ void GPUPhysicsWorld::UpdateUniforms(float deltaTime) {
         glm::vec4 forces;            // x = airResistance, y = windStrength, zw = padding
         glm::vec4 windDir_stretch;   // xyz = windDirection, w = stretchResistance
         glm::vec4 limits;            // x = maxVelocity, y = selfCollisionRadius, z = selfCollisionStrength, w = padding
+        glm::vec4 interaction;       // xyz = interactionPos, w = interactionActive
+        glm::vec4 time_data;         // x = u_Time
     } p;
 
     p.gravity_dt = glm::vec4(m_Config.gravity, deltaTime);
@@ -461,6 +494,15 @@ void GPUPhysicsWorld::UpdateUniforms(float deltaTime) {
     p.forces = glm::vec4(m_Config.airResistance, m_Config.windStrength, 0.0f, 0.0f);
     p.windDir_stretch = glm::vec4(m_Config.windDirection.x, m_Config.windDirection.y, m_Config.windDirection.z, m_Config.structuralStiffness);
     p.limits = glm::vec4(m_Config.maxVelocity, m_Config.selfCollisionRadius, m_Config.selfCollisionStrength, 0.0f);
+
+    // Get interaction data from global state if available
+    if (g_State) {
+        p.interaction = glm::vec4(g_State->interactionWorldPos, g_State->isInteracting ? 1.0f : 0.0f);
+        p.time_data = glm::vec4(g_State->totalTime, 0.0f, 0.0f, 0.0f);
+    } else {
+        p.interaction = glm::vec4(0.0f);
+        p.time_data = glm::vec4(0.0f);
+    }
 
     glBindBuffer(GL_UNIFORM_BUFFER, m_UniformBuffer);
     glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(PhysicsParams), &p);

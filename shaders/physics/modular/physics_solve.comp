@@ -22,9 +22,47 @@ void main() {
     uint globalIdx = gl_GlobalInvocationID.x;
     if (globalIdx >= uint(numParticles)) return;
     if (particleColors[globalIdx] != uint(current_color)) return;
-    if (pinnedFlags[globalIdx] >= 0.5f) return;
 
     vec3 curPos = positions[globalIdx].xyz;
+
+    // ============================================================
+    // SUPER MOUSE INTERACTION (VORTEX & BLACK HOLE)
+    // Runs multiple times per frame for MASSIVE power
+    // ============================================================
+    if (interactionActive) {
+        vec3 target = interactionPos;
+        vec3 toTarget = target - curPos;
+        float dist = length(toTarget);
+        
+        float radius = 9.5; // Huge radius
+        if (dist < radius) {
+            float influence = 1.0 - dist / radius;
+            influence = pow(influence, 0.4); // Even broader influence
+            
+            // 1. BLACK HOLE PULL (Massive attraction)
+            vec3 pull = toTarget * 0.5 * influence;
+            
+            // 2. VORTEX SWIRL (Tangential spin)
+            vec3 upAxis = vec3(0, 1, 0);
+            vec3 vortexDir = normalize(cross(toTarget + vec3(0.01), upAxis));
+            vec3 vortex = vortexDir * 0.4 * influence;
+            
+            // 3. TURBULENT FLUTTER
+            float wave = sin(curPos.x * 4.0 + curPos.z * 3.0 + u_Time * 12.0) * 0.08 * influence;
+            vec3 ripple = vec3(0, wave, 0);
+
+            // 4. ANTI-GRAVITY LIFT
+            vec3 lift = vec3(0, 0.4 * influence, 0);
+            
+            // Apply immediately to current position
+            curPos += (pull + vortex + ripple + lift);
+            positions[globalIdx].xyz = curPos;
+        }
+    }
+
+    // Pinned check after interaction to allow stretching hanging cloths
+    if (pinnedFlags[globalIdx] >= 0.5f) return;
+
     ivec2 range = particleConstraints[globalIdx];
 
     for (int i = 0; i < range.y; i++) {
@@ -41,8 +79,6 @@ void main() {
         float diff = (d - c.params.x) / d;
         float stiffness = getStiffnessForType(c.padding.x);
         
-        // STABILITY FACTOR: Reduce response slightly for particles on ground
-        // to prevent constraints from "fighting" ground stability.
         float groundFactor = smoothstep(0.0f, 0.15f, curPos.y);
         float response = mix(0.15f, 0.25f, groundFactor);
         

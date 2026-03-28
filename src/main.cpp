@@ -74,24 +74,28 @@ int main() {
 
     std::cout << "=== Cloth Simulation ===" << std::endl;
     std::cout << "Controls:" << std::endl;
-    std::cout << "  WASD/Arrows - Move camera" << std::endl;
-    std::cout << "  Shift + WASD - Fast camera (sprint)" << std::endl;
-    std::cout << "  Mouse - Rotate camera (click and drag)" << std::endl;
-    std::cout << "  +/- or PageUp/PageDown - Zoom in/out" << std::endl;
-    std::cout << "  Space - Reset cloth" << std::endl;
-    std::cout << "  F - Toggle terrain wireframe" << std::endl;
-    std::cout << "  T/Shift+T - Change terrain texture" << std::endl;
-    std::cout << "  1-4 - Select terrain texture directly" << std::endl;
-    std::cout << "  Escape - Exit" << std::endl;
+    std::cout << "  WASD / Arrows         - Move camera (Horizontal)" << std::endl;
+    std::cout << "  Q / Left Control      - Move camera Down / Up" << std::endl;
+    std::cout << "  Shift + WASD          - Fast camera (Sprint)" << std::endl;
+    std::cout << "  Mouse (Drag)          - Rotate camera (when not interacting)" << std::endl;
+    std::cout << "  -----------------------------------------------------------" << std::endl;
+    std::cout << "  E (Hold) + Mouse      - INTERACT with cloth (Vortex & Black Hole!)" << std::endl;
+    std::cout << "  Space                 - Reset all cloths to initial drop positions" << std::endl;
+    std::cout << "  H                     - Reset Camera to Home position" << std::endl;
+    std::cout << "  -----------------------------------------------------------" << std::endl;
+    std::cout << "  F                     - Toggle terrain wireframe" << std::endl;
+    std::cout << "  T / Shift + T         - Change terrain texture" << std::endl;
+    std::cout << "  1-4                   - Select terrain texture directly" << std::endl;
+    std::cout << "  Escape                - Exit" << std::endl;
     std::cout << std::endl;
     std::cout << "Features:" << std::endl;
+    std::cout << "  - Interactive Cloth: Use 'E' to swirl and pull fabric with your mouse." << std::endl;
+    std::cout << "  - Visual Feedback: Green pulsing outline shows when you're in control." << std::endl;
     std::cout << "  - Mirror sphere at center reflects the environment" << std::endl;
     std::cout << "  - Mountain terrain with heightmap" << std::endl;
-    std::cout << "  - Skybox with gradient sky" << std::endl;
-    std::cout << "  - Pillars and rocks" << std::endl;
     std::cout << "  - 3 textured cloths draping over the sphere" << std::endl;
     std::cout << std::endl;
-    std::cout << "Tip: Click and drag mouse to rotate camera and look around the mirror sphere!" << std::endl;
+    std::cout << "Tip: Hold 'E' and move the mouse over the cloths to see the magic!" << std::endl;
     std::cout << std::endl;
 
     // Create application
@@ -276,6 +280,7 @@ int main() {
             deltaTime = 0.1f;
         }
 
+        state.totalTime += deltaTime;
         HandleInput(state, deltaTime);
 
         // Update cloth drop timers and release cloths when it's time to fall

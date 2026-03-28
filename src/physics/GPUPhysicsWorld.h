@@ -78,6 +78,7 @@ public:
 
     bool Initialize(const GPUPhysicsConfig& config = GPUPhysicsConfig());
     size_t InitializeCloth(int widthSegments, int heightSegments, float startX, float startY, float startZ, float segmentLength, bool pinned);
+    void ResetCloth(size_t offset, int widthSegments, int heightSegments, float startX, float startY, float startZ, float segmentLength, bool pinned, int clothID);
     void SetParticlesPinned(size_t startIdx, size_t count, bool pinned);
     void Update(float deltaTime);
     void Unbind() const;

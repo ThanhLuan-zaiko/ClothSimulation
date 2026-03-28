@@ -12,14 +12,16 @@ layout(std430, binding = 0) buffer PositionBufferSSBO { vec4 positions[]; };
 layout(std430, binding = 13) buffer SortedIndicesSSBO { uint sortedIndices[]; };
 layout(std430, binding = 14) buffer SortTempSSBO { uint sortTemp[]; };
 
-// UBO
+// UBO - Updated to match physics_common.glsl and global project structure
 layout(std140, binding = 2) uniform PhysicsParams {
-    vec4 gravity_dt;
-    vec4 params1;
-    vec4 terrain;
-    vec4 forces;
-    vec4 windDir_stretch;
-    vec4 limits;
+    vec4 gravity_dt;        // xyz = gravity, w = deltaTime
+    vec4 params1;           // x = damping, y = numParticles, z = numConstraints, w = restLength
+    vec4 terrain;           // xy = terrainSize, z = terrainHeightScale, w = gravityScale
+    vec4 forces;            // x = airResistance, y = windStrength, zw = padding
+    vec4 windDir_stretch;   // xyz = windDirection, w = stretchResistance
+    vec4 limits;            // x = maxVelocity, y = selfCollisionRadius, z = selfCollisionStrength, w = padding
+    vec4 interaction;       // xyz = interactionPos, w = interactionActive
+    vec4 time_data;         // x = u_Time
 };
 
 #define numParticles (int(params1.y))
@@ -27,26 +29,25 @@ layout(std140, binding = 2) uniform PhysicsParams {
 // Shared memory
 shared uint sharedData[BLOCK_SIZE];
 
-// Push constants
-layout(push_constant) uniform PushConstants {
-    uint bitIndex;
-    uint numElements;
-    uint numBlocks;
-    uint zeroOffset;  // Total zeros from all previous blocks
-} pc;
+// Replacing Push Constants with standard OpenGL uniforms
+uniform uint u_bitIndex;
+uniform uint u_numElements;
+uniform uint u_numBlocks;
+uniform uint u_zeroOffset;  // Total zeros from all previous blocks
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
     uint localIdx = gl_LocalInvocationID.x;
     uint groupIdx = gl_WorkGroupID.x;
     
-    if (idx >= pc.numElements) return;
+    if (idx >= u_numElements) return;
     
     // Get particle and extract bit
     uint particleIdx = sortedIndices[idx];
     float xCoord = positions[particleIdx].x;
+    // Offset handle negative coordinates in sorting (standard practice)
     uint xBits = floatBitsToUint(xCoord + 2000.0f);
-    uint bit = (xBits >> pc.bitIndex) & 1u;
+    uint bit = (xBits >> u_bitIndex) & 1u;
     
     // ============================================================
     // PHASE 1: Count zeros in block (parallel reduction)
@@ -65,7 +66,7 @@ void main() {
     // Store block zero count
     uint blockZeros = sharedData[0];
     if (localIdx == 0) {
-        sortTemp[pc.numElements + groupIdx] = blockZeros;
+        sortTemp[u_numElements + groupIdx] = blockZeros;
     }
     barrier();
     
@@ -93,13 +94,13 @@ void main() {
     
     // Sum zeros from all previous blocks
     for (uint b = 0; b < groupIdx; b++) {
-        blockOffsetZeros += sortTemp[pc.numElements + b];
+        blockOffsetZeros += sortTemp[u_numElements + b];
     }
     
-    // Total zeros = pc.zeroOffset + all block zeros
-    uint totalZeros = pc.zeroOffset;
-    for (uint b = 0; b < pc.numBlocks; b++) {
-        totalZeros += sortTemp[pc.numElements + b];
+    // Total zeros
+    uint totalZeros = u_zeroOffset;
+    for (uint b = 0; b < u_numBlocks; b++) {
+        totalZeros += sortTemp[u_numElements + b];
     }
     
     // Ones start after all zeros
@@ -107,8 +108,8 @@ void main() {
     
     // Subtract zeros from blocks after us to get ones offset for this block
     uint zerosAfterUs = 0u;
-    for (uint b = groupIdx + 1; b < pc.numBlocks; b++) {
-        zerosAfterUs += sortTemp[pc.numElements + b];
+    for (uint b = groupIdx + 1; b < u_numBlocks; b++) {
+        zerosAfterUs += sortTemp[u_numElements + b];
     }
     
     // ============================================================
@@ -116,19 +117,19 @@ void main() {
     // ============================================================
     uint writeIdx;
     if (bit == 0) {
-        writeIdx = pc.zeroOffset + blockOffsetZeros + posInZeros;
+        writeIdx = u_zeroOffset + blockOffsetZeros + posInZeros;
     } else {
         writeIdx = blockOffsetOnes - zerosAfterUs + posInOnes;
     }
     
-    if (writeIdx < pc.numElements) {
+    if (writeIdx < u_numElements) {
         sortTemp[writeIdx] = particleIdx;
     }
     
     barrier();
     
     // Copy back
-    if (writeIdx < pc.numElements) {
+    if (writeIdx < u_numElements) {
         sortedIndices[writeIdx] = sortTemp[writeIdx];
     }
 }

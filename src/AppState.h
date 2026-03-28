@@ -92,12 +92,20 @@ struct AppState {
     double lastMouseX = 0;
     double lastMouseY = 0;
 
+    // Time tracking
+    float totalTime = 0.0f;
+
     // Key repeat tracking
     float keyRepeatTimer = 0.0f;
     float keyRepeatDelay = 0.15f;
     bool lastTKeyPressed = false;
+    bool lastSpaceKeyPressed = false;
     bool lastShiftKeyPressed = false;
     bool lastFKeyPressed = false;
+    bool lastEKeyPressed = false;
+    bool lastHKeyPressed = false;
+    bool isInteracting = false;
+    glm::vec3 interactionWorldPos = glm::vec3(0.0f);
     bool lastNumberKeysPressed[9] = {false};
 
     // Constructor

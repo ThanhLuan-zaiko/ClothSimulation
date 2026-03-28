@@ -86,6 +86,8 @@ layout(std140, binding = 2) uniform PhysicsParams {
     vec4 forces;            // x = airResistance, y = windStrength, zw = padding
     vec4 windDir_stretch;   // xyz = windDirection, w = stretchResistance
     vec4 limits;            // x = maxVelocity, y = selfCollisionRadius, z = selfCollisionStrength, w = padding
+    vec4 interaction;       // xyz = interactionPos, w = interactionActive (0 or 1)
+    vec4 time_data;         // x = u_Time, yzw = padding
 };
 
 // Macros for cleaner code
@@ -105,6 +107,9 @@ layout(std140, binding = 2) uniform PhysicsParams {
 #define maxVelocity (limits.x)
 #define selfCollisionRadius (limits.y)
 #define selfCollisionStrength (limits.z)
+#define interactionPos (interaction.xyz)
+#define interactionActive (interaction.w > 0.5)
+#define u_Time (time_data.x)
 
 // ============================================================================
 // SHARED MEMORY
@@ -119,7 +124,8 @@ shared vec3 sharedPositions[256];
 /// @brief Converts a float to a sortable uint
 uint floatToUint(float f) {
     uint u = floatBitsToUint(f);
-    return (u & 0x80000000u) != 0 ? ~u : u | 0x80000000u;
+    uint mask = (u & 0x80000000u) != 0u ? 0xFFFFFFFFu : 0x80000000u;
+    return u ^ mask;
 }
 
 /// @brief Hash function for spatial hashing

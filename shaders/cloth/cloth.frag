@@ -15,6 +15,8 @@ uniform int u_Wireframe;
 uniform vec3 u_WireframeColor;
 uniform sampler2D u_ClothTexture;
 uniform int u_UseTexture;
+uniform int u_Interactive;
+uniform float u_Time;
 
 void main() {
     // Wireframe mode
@@ -54,6 +56,20 @@ void main() {
     }
 
     vec3 result = (ambient + diffuse + specular) * baseColor;
+
+    // Interactive outline (Green)
+    if (u_Interactive == 1) {
+        float pulse = 0.5 + 0.5 * sin(u_Time * 6.0);
+        float fresnel = 1.0 - max(dot(norm, viewDir), 0.0);
+        fresnel = pow(fresnel, 4.0); // Sharper edge
+        
+        vec3 greenGlow = vec3(0.0, 1.0, 0.0);
+        float intensity = 0.4 + 0.6 * pulse;
+        result = mix(result, greenGlow, fresnel * intensity);
+        
+        // Add a slight emissive green tint to everything to show mode is active
+        result += vec3(0.0, 0.03 * pulse, 0.0);
+    }
 
     result = pow(result, vec3(1.0 / 2.2));
 

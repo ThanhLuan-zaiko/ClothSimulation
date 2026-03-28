@@ -14,14 +14,57 @@ void HandleInput(AppState& state, float deltaTime) {
     if (Input::IsKeyPressed(GLFW_KEY_S)) state.camera.MoveForward(-deltaTime * speed);
     if (Input::IsKeyPressed(GLFW_KEY_A)) state.camera.MoveRight(-deltaTime * speed);
     if (Input::IsKeyPressed(GLFW_KEY_D)) state.camera.MoveRight(deltaTime * speed);
-    if (Input::IsKeyPressed(GLFW_KEY_E)) state.camera.MoveUp(deltaTime * speed);
+    if (Input::IsKeyPressed(GLFW_KEY_LEFT_CONTROL)) state.camera.MoveUp(deltaTime * speed);
     if (Input::IsKeyPressed(GLFW_KEY_Q)) state.camera.MoveUp(-deltaTime * speed);
 
-    // 2. Mouse rotation
+    // 2. Mouse rotation and Cloth Interaction
     double mouseX = Input::GetMouseX();
     double mouseY = Input::GetMouseY();
     
-    if (Input::IsMouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT)) {
+    // Check for Interaction mode (E key)
+    state.isInteracting = Input::IsKeyPressed(GLFW_KEY_E);
+
+    if (state.isInteracting) {
+        // Calculate interaction world position
+        // Get viewport for unproject
+        GLint viewport[4];
+        glGetIntegerv(GL_VIEWPORT, viewport);
+        
+        // Calculate ray in world space
+        glm::vec3 win(mouseX, (float)viewport[3] - mouseY, 0.0f); // Near plane
+        glm::vec3 winFar(mouseX, (float)viewport[3] - mouseY, 1.0f); // Far plane
+        glm::mat4 view = state.camera.GetViewMatrix();
+        glm::mat4 proj = state.camera.GetProjectionMatrix();
+
+        glm::vec3 worldNear = glm::unProject(win, view, proj, glm::vec4(0, 0, viewport[2], viewport[3]));
+        glm::vec3 worldFar = glm::unProject(winFar, view, proj, glm::vec4(0, 0, viewport[2], viewport[3]));
+
+        glm::vec3 rayDir = glm::normalize(worldFar - worldNear);
+        glm::vec3 rayOrigin = state.camera.GetPosition();
+
+        // ACCURATE 3D PICKING: Read depth buffer at mouse position
+        float depth = 1.0f;
+        glReadPixels((int)mouseX, viewport[3] - (int)mouseY, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &depth);
+
+        float targetDistance = 0.0f;
+        if (depth < 1.0f) {
+            // If we hit SOMETHING (cloth, sphere, or ground), use that exact depth
+            glm::vec3 win(mouseX, (float)viewport[3] - mouseY, depth);
+            state.interactionWorldPos = glm::unProject(win, view, proj, glm::vec4(0, 0, viewport[2], viewport[3]));
+        } else {
+            // FALLBACK: If pointing at sky, use previous logic
+            if (rayDir.y < -0.05f) {
+                targetDistance = -rayOrigin.y / rayDir.y;
+                targetDistance = glm::clamp(targetDistance, 1.0f, 100.0f);
+            } else {
+                targetDistance = glm::distance(rayOrigin, state.mirrorSphere.GetPosition());
+            }
+            state.interactionWorldPos = rayOrigin + rayDir * targetDistance;
+        }
+
+        // Visual feedback
+    } else if (Input::IsMouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT)) {
+        // Only rotate camera if NOT interacting
         // Calculate delta from last frame
         float deltaX = static_cast<float>(mouseX - state.lastMouseX);
         float deltaY = static_cast<float>(mouseY - state.lastMouseY);
@@ -38,14 +81,41 @@ void HandleInput(AppState& state, float deltaTime) {
     state.lastMouseY = mouseY;
 
     // 3. Reset cloth (Space)
-    if (Input::IsKeyPressed(GLFW_KEY_SPACE)) {
-        for (auto* cloth : state.cloths) {
-            cloth->Reset();
-        }
-        // No need to update reflection - cloth movement is already captured
-    }
+    bool spaceDown = Input::IsKeyPressed(GLFW_KEY_SPACE);
+    if (spaceDown && !state.lastSpaceKeyPressed) {
+        for (size_t i = 0; i < state.cloths.size(); i++) {
+            Cloth* cloth = state.cloths[i];
+            size_t offset = state.clothParticleOffsets[i];
+            
+            // Get cloth config for initial positions using getters
+            int w = cloth->GetWidthSegments();
+            int h = cloth->GetHeightSegments();
+            float segmentLen = cloth->GetSegmentLength();
+            float startX = cloth->GetStartX();
+            float startY = cloth->GetStartY();
+            float startZ = cloth->GetStartZ();
 
-    // 4. Terrain Texture Switching (T / Shift + T)
+            // Reset GPU buffers
+            state.physicsWorld.ResetCloth(offset, w, h, startX, startY, startZ, segmentLen, true, (int)i);
+            
+            // Reset drop state in AppState
+            state.clothDropTimers[i] = 0.0f;
+            state.clothDropped[i] = false;
+        }
+    }
+    state.lastSpaceKeyPressed = spaceDown;
+
+    // 4. Reset Camera (H)
+    bool hDown = Input::IsKeyPressed(GLFW_KEY_H);
+    if (hDown && !state.lastHKeyPressed) {
+        state.camera.SetPosition(glm::vec3(0.0f, 15.0f, 25.0f));
+        state.cameraYaw = -90.0f;
+        state.cameraPitch = -20.0f;
+        state.camera.SetRotation(glm::vec3(state.cameraYaw, state.cameraPitch, 0.0f));
+    }
+    state.lastHKeyPressed = hDown;
+
+    // 5. Terrain Texture Switching (T / Shift + T)
     bool tDown = Input::IsKeyPressed(GLFW_KEY_T);
     bool shiftDown = Input::IsKeyPressed(GLFW_KEY_LEFT_SHIFT) || Input::IsKeyPressed(GLFW_KEY_RIGHT_SHIFT);
 
@@ -76,6 +146,7 @@ void HandleInput(AppState& state, float deltaTime) {
         state.world.GetTerrain().SetWireframe(!state.world.GetTerrain().IsWireframe());
     }
     state.lastFKeyPressed = fDown;
+    state.lastEKeyPressed = state.isInteracting;
 }
 
 } // namespace cloth

@@ -9,27 +9,26 @@
 void main() {
     uint globalIdx = gl_GlobalInvocationID.x;
     if (globalIdx >= uint(numParticles)) return;
-    if (pinnedFlags[globalIdx] >= 0.5f) return;
 
     vec3 curPos = positions[globalIdx].xyz;
     vec3 prevPos = prevPositions[globalIdx].xyz;
+    float isPinned = pinnedFlags[globalIdx];
 
-    // ============================================================
-    // VERLET INTEGRATION (only place this happens)
-    // x_new = x_cur + (x_cur - x_prev) * damping + a * dt²
-    // ============================================================
-    vec3 vel = curPos - prevPos;
-    vel *= damping;
-    vel += gravity * deltaTime * deltaTime;
+    // Simple Verlet integration
+    vec3 velocity = (curPos - prevPos) * damping;
     
-    // Velocity clamp
-    float maxV = maxVelocity;
-    float vLen = length(vel);
-    if (vLen > maxV) {
-        vel = (vel / max(vLen, 0.0001)) * maxV;
+    // Apply gravity
+    velocity += gravity * gravityScale * deltaTime * deltaTime;
+    
+    // Apply air resistance/wind
+    velocity *= airResistance;
+    
+    vec3 nextPos = curPos + velocity;
+
+    // Pinned particles stay put
+    if (isPinned >= 0.5f) {
+        nextPos = curPos;
     }
-    
-    vec3 nextPos = curPos + vel;
 
     // Update buffers
     prevPositions[globalIdx].xyz = curPos;  // prev = old current
