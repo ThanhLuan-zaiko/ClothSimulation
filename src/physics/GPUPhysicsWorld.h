@@ -33,7 +33,7 @@ struct GPUPhysicsConfig {
     float collisionMargin = 0.03f;
     float dampingFactor = 0.92f;        // Higher = less energy loss on collision
     float frictionFactor = 0.90f;
-    int collisionSubsteps = 8;
+    int collisionSubsteps = 10;
 
     float gravityScale = 1.0f;          // Neutral gravity scale
     float airResistance = 0.996f;       // Higher = more air resistance
@@ -52,11 +52,16 @@ struct GPUPhysicsConfig {
     int collisionIterations = 12;
 
     // Sphere collision parameters
-    float sphereStaticFriction = 0.85f;   // Static friction (when at rest)
-    float sphereDynamicFriction = 0.80f;  // Dynamic friction (when moving)
-    float sphereBounce = 0.1f;            // Low bounce for realistic behavior
-    float sphereGripFactor = 0.5f;        // Surface grip/adhesion
-    float staticFrictionThreshold = 0.8f; // Velocity threshold for static friction
+    float sphereStaticFriction = 0.98f;   // Very high = cloth catches on top
+    float sphereDynamicFriction = 0.10f;  // Very low = minimal reduction from max friction
+    float sphereBounce = 0.0f;            // No bounce
+    float sphereGripFactor = 0.8f;        // High grip for draping
+    float staticFrictionThreshold = 1.2f; // Very high = easy to stop and hang
+    
+    // NEW: Improved collision parameters
+    float sleepingThreshold = 0.25f;      // Higher = more aggressive anti-jitter
+    float sphereWrapFactor = 0.95f;       // Very high = wraps a lot
+    float terrainDamping = 0.02f;         // Very low = soft terrain contact
 };
 
 struct CollisionParams {

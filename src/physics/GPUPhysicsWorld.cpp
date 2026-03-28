@@ -479,7 +479,10 @@ void GPUPhysicsWorld::UpdateUniforms(float deltaTime) {
         float sphereBounce;
         float sphereGripFactor;
         float staticFrictionThreshold;
-        float padding2[3];
+        float sleepingThreshold;        // NEW
+        float sphereWrapFactor;         // NEW
+        float terrainDamping;           // NEW
+        float padding2[1];              // Adjusted padding
     } c;
 
     c.sphereCenter = m_Collision.sphereCenter;
@@ -494,6 +497,9 @@ void GPUPhysicsWorld::UpdateUniforms(float deltaTime) {
     c.sphereBounce = m_Config.sphereBounce;
     c.sphereGripFactor = m_Config.sphereGripFactor;
     c.staticFrictionThreshold = m_Config.staticFrictionThreshold;
+    c.sleepingThreshold = m_Config.sleepingThreshold;
+    c.sphereWrapFactor = m_Config.sphereWrapFactor;
+    c.terrainDamping = m_Config.terrainDamping;
 
     glBindBuffer(GL_UNIFORM_BUFFER, m_CollisionUniformBuffer);
     glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(CollisionParamsData), &c);

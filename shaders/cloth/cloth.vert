@@ -8,6 +8,7 @@ out vec3 v_Normal;
 out vec3 v_FragPos;
 out vec2 v_TexCoord;
 out float v_IsWireframe;
+out float v_State;
 
 uniform mat4 u_Model;
 uniform mat4 u_View;
@@ -16,6 +17,7 @@ uniform int u_Wireframe;
 
 void main() {
     vec3 pos = a_Position.xyz;
+    v_State = a_Position.w;
     v_FragPos = vec3(u_Model * vec4(pos, 1.0));
     v_Normal = mat3(transpose(inverse(u_Model))) * a_Normal;
     v_TexCoord = a_TexCoord;

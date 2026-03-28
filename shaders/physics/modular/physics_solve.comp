@@ -41,8 +41,12 @@ void main() {
         float diff = (d - c.params.x) / d;
         float stiffness = getStiffnessForType(c.padding.x);
         
-        // Increased response factor (0.3 instead of 0.2) for better form
-        curPos += delta * diff * stiffness * 0.3;
+        // STABILITY FACTOR: Reduce response slightly for particles on ground
+        // to prevent constraints from "fighting" ground stability.
+        float groundFactor = smoothstep(0.0f, 0.15f, curPos.y);
+        float response = mix(0.15f, 0.25f, groundFactor);
+        
+        curPos += delta * diff * stiffness * response;
     }
 
     positions[globalIdx].xyz = curPos;

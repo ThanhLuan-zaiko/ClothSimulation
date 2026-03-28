@@ -194,7 +194,10 @@ struct AppState {
         config.collisionMargin = 0.05f;
         config.dampingFactor = 0.95f;
         config.frictionFactor = 0.98f;
-        config.collisionSubsteps = gpuInfo.collisionSubsteps;
+        config.collisionSubsteps = 10;
+        config.sleepingThreshold = 0.4f;
+        config.sphereWrapFactor = 0.95f;
+        config.terrainDamping = 0.05f;
         
         // INTER-CLOTH COLLISION SETTINGS (More robust)
         config.selfCollisionRadius = 0.35f;   // Increased cushion (35cm)

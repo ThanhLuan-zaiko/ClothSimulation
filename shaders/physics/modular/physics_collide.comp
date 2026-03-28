@@ -20,6 +20,9 @@ layout(std140, binding = 8) uniform CollisionParams {
     float sphereBounce;
     float sphereGripFactor;
     float staticFrictionThreshold;
+    float sleepingThreshold;        // NEW: Velocity threshold for sleeping
+    float sphereWrapFactor;         // NEW: How much cloth wraps around sphere (0-1)
+    float terrainDamping;           // NEW: Extra damping on terrain contact
 };
 
 uniform sampler2D terrainHeightmap;
@@ -49,67 +52,93 @@ void main() {
 
     vec3 pos = positions[globalIdx].xyz;
     vec3 prevPos = prevPositions[globalIdx].xyz;
+    vec3 vel = pos - prevPos;
+    float velLen = length(vel);
+
+    // DEBUG STATE: Default to 0.0
+    float debugState = 0.0f;
 
     // ============================================================
-    // SPHERE COLLISION - Improved Static Friction (Sticky)
+    // SPHERE COLLISION - Aggressive Draping
     // ============================================================
     vec3 toSphere = pos - sphereCenter;
     float dist = length(toSphere);
     float minDist = sphereRadius + collisionMargin;
 
-    if (dist < minDist && dist > EPSILON) {
+    if (dist < minDist + 0.1f && dist > EPSILON) {
         vec3 normal = toSphere / dist;
-        vec3 correctedPos = sphereCenter + normal * minDist;
+        vec3 surfacePos = sphereCenter + normal * minDist;
+        float contactAngle = dot(normal, vec3(0.0, 1.0, 0.0));
         
-        vec3 vel = pos - prevPos;
-        float vNormal = dot(vel, normal);
-        vec3 vTangent = vel - vNormal * normal;
-        float tangentSpeed = length(vTangent);
-        
-        // Apply Static Friction: Kill tangent movement if below threshold
-        if (tangentSpeed < staticFrictionThreshold * deltaTime * 1.2) {
-            vTangent = vec3(0.0);
-        } else {
-            // Apply Dynamic Friction
-            float friction = sphereDynamicFriction * sphereGripFactor * 1.5;
-            vTangent *= max(0.0, 1.0 - friction);
+        // HUGGING FORCE: Stronger suction to keep cloth on surface
+        if (dist > minDist) {
+            float suction = 0.4f * sphereWrapFactor * smoothstep(minDist + 0.1f, minDist, dist);
+            pos = mix(pos, surfacePos, suction);
         }
-        
-        // Total Normal Damping: No bounce, stick to surface
-        if (vNormal < 0.0) vNormal = 0.0;
-        
-        pos = correctedPos;
-        prevPos = pos - vTangent;
+
+        if (dist < minDist) {
+            float vNormal = dot(vel, normal);
+            vec3 vTangent = vel - vNormal * normal;
+            float tangentSpeed = length(vTangent);
+            
+            // EXTREME STICK: Much more aggressive thresholds
+            float wrapThreshold = 0.2f - (sphereWrapFactor * 0.8f); 
+            bool inStickZone = (contactAngle > wrapThreshold);
+            
+            // Massive threshold boost: make it very hard to break the stick
+            float stickiness = smoothstep(wrapThreshold, 1.0f, contactAngle);
+            float stickThreshold = staticFrictionThreshold * (20.0f + sphereGripFactor * 50.0f + stickiness * 100.0f);
+            
+            // If at the very top (Red zone), we force a stop for at least a few moments
+            if (inStickZone && (tangentSpeed < stickThreshold || contactAngle > 0.8f)) {
+                pos = surfacePos;
+                // Hard Lock: No velocity, and counteract gravity
+                prevPos = pos + (gravity * deltaTime * deltaTime) / max(damping, 0.01f);
+                debugState = 1.0f; 
+            } else {
+                // Friction while sliding is also much higher now
+                float friction = 0.80f + (0.19f * sphereWrapFactor);
+                vTangent *= friction;
+                vNormal = 0.0;
+                pos = surfacePos;
+                prevPos = pos - vTangent;
+            }
+        }
     }
 
     // ============================================================
-    // TERRAIN COLLISION - Natural Grip
+    // TERRAIN COLLISION - Iron Plate Stability
     // ============================================================
     float terrainH = getTerrainHeight(pos.x, pos.z);
-    float totalMargin = collisionMargin + 0.02;
+    float totalMargin = collisionMargin + 0.005f;
 
     if (pos.y < terrainH + totalMargin) {
         vec3 normal = getTerrainNormal(pos.x, pos.z);
         vec3 correctedPos = vec3(pos.x, terrainH + totalMargin, pos.z);
-        
-        vec3 vel = pos - prevPos;
-        float vNormal = dot(vel, normal);
-        vec3 vTangent = vel - vNormal * normal;
-        float tangentSpeed = length(vTangent);
-        
-        if (tangentSpeed < staticFrictionThreshold * deltaTime) {
-            vTangent = vec3(0.0);
+        vec3 curVel = pos - prevPos;
+        float curVelLen = length(curVel);
+
+        // EXTREME sleep threshold to ensure ~90% coverage
+        float sleepThresh = max(sleepingThreshold * 6.0f, 0.6f);
+
+        if (curVelLen < sleepThresh) {
+            // HARD SLEEP LOCK: Absolute zero movement
+            pos = correctedPos;
+            prevPos = pos + (gravity * deltaTime * deltaTime) / max(damping, 0.01f);
+            debugState = 2.0f; // BLUE
         } else {
-            float friction = max(frictionFactor, 0.8);
-            vTangent *= max(0.0, 1.0 - friction * 0.5);
+            // Even when not sleeping, apply massive damping near ground
+            float damp = clamp(1.0f - terrainDamping * 5.0f, 0.0f, 0.3f);
+            float vNormal = dot(curVel, normal);
+            vec3 vTangent = curVel - vNormal * normal;
+            vTangent *= damp;
+            vNormal = 0.0;
+            pos = correctedPos;
+            prevPos = pos - vTangent;
         }
-        
-        if (vNormal < 0.0) vNormal = 0.0;
-        
-        pos = correctedPos;
-        prevPos = pos - vTangent;
     }
 
     positions[globalIdx].xyz = pos;
+    positions[globalIdx].w = debugState; // Pass state to renderer
     prevPositions[globalIdx].xyz = prevPos;
 }

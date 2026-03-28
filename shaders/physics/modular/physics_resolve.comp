@@ -11,6 +11,9 @@ layout(std430, binding = 15) buffer CollisionPairsSSBO { uvec2 collisionPairs[];
 
 #define pairCount (sortTemp[numParticles + 8192])
 
+// NEW: Softening parameter to prevent harsh corrections
+const float SOFTENING = 0.02;
+
 void main() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= pairCount) return;
@@ -40,13 +43,55 @@ void main() {
     vec3 n = delta / d;
     float penetration = selfCollisionRadius - d;
 
-    // Gentle Position correction (PBD style)
-    vec3 correction = n * penetration * 0.5;
+    // STABILIZED PBD RESOLUTION: Anti-Jitter Settling
+    // ============================================================
     
+    // PERFECT STABILITY: If either particle is Sticky on Sphere (w > 0.5) 
+    // or Sleeping on Ground (w > 1.5), we bypass self-collision.
+    // This allows the world collision to have the final, absolute word.
+    if (positions[i].w > 0.5f || positions[j].w > 0.5f) return;
+
+    // DEAD-ZONE: Ignore micro-penetrations to prevent high-frequency chatter
+    if (penetration < 0.002f) return;
+
+    // GROUND SETTLING FACTOR:
+    float groundLevelA = positions[i].y - (selfCollisionRadius * 0.5f);
+    float groundLevelB = positions[j].y - (selfCollisionRadius * 0.5f);
+    float settlingA = smoothstep(0.0f, 0.2f, groundLevelA);
+    float settlingB = smoothstep(0.0f, 0.2f, groundLevelB);
+    float settlingFactor = min(settlingA, settlingB);
+
+    // Dynamic correction: much softer when settled on ground
+    float correctionFactor = mix(0.05f, 0.35f, settlingFactor);
+    
+    // Softening curve
+    float softPenetration = penetration * penetration / (penetration + 0.005f);
+    vec3 correction = n * (softPenetration * correctionFactor);
+    
+    // Apply position correction
     positions[i].xyz += correction;
     positions[j].xyz -= correction;
+
+    // ============================================================
+    // STABLE VELOCITY DAMPING: Zero-Energy Settling
+    // ============================================================
+    vec3 velA = positions[i].xyz - prevPositions[i].xyz;
+    vec3 velB = positions[j].xyz - prevPositions[j].xyz;
+    vec3 relVel = velA - velB;
+    float relVelNormal = dot(relVel, n);
+
+    if (relVelNormal < 0.0) {
+        // Stronger damping for settled particles
+        float localDamping = mix(0.95f, 0.7f, settlingFactor);
+        vec3 dampImpulse = n * (relVelNormal * localDamping);
+        
+        prevPositions[i].xyz += dampImpulse * 0.5f;
+        prevPositions[j].xyz -= dampImpulse * 0.5f;
+    }
     
-    // Dampen implicit velocity to prevent "explosion" when layers touch
-    prevPositions[i].xyz += correction * 0.8;
-    prevPositions[j].xyz -= correction * 0.8;
+    // Maintain stability by moving prevPositions with correction
+    // Use a high factor (1.0) for particles on ground to kill energy
+    float prevCorrFactor = mix(1.0f, 0.8f, settlingFactor);
+    prevPositions[i].xyz += correction * prevCorrFactor;
+    prevPositions[j].xyz -= correction * prevCorrFactor;
 }
