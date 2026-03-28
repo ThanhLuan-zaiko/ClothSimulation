@@ -1,8 +1,5 @@
-#include "physics_common.glsl"
-
+#version 460 core
+layout(local_size_x = 256) in;
 void main() {
-    uint globalIdx = gl_GlobalInvocationID.x;
-    if (globalIdx < GRID_SIZE) {
-        gridHead[globalIdx] = 0xFFFFFFFF;
-    }
+    // Spatial grid is currently unused but shader must be valid
 }

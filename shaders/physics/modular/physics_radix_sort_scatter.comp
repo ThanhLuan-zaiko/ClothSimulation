@@ -1,0 +1,50 @@
+#version 460 core
+#extension GL_ARB_compute_shader : require
+#extension GL_ARB_shader_storage_buffer_object : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+
+#include "physics_common.glsl"
+
+layout(std430, binding = 13) buffer SourceSSBO { uint sourceIndices[]; };
+layout(std430, binding = 14) buffer SortTempSSBO { uint sortTemp[]; };
+
+#define HistOffset (numParticles)
+uniform uint bitOffset;
+shared uint digitCounts[16];
+shared uint localOffsets[256];
+
+void main() {
+    uint localIdx = gl_LocalInvocationID.x;
+    uint groupIdx = gl_WorkGroupID.x;
+    uint globalIdx = gl_GlobalInvocationID.x;
+
+    uint particleIdx = 0;
+    uint digit = 0;
+    if (globalIdx < uint(numParticles)) {
+        particleIdx = sourceIndices[globalIdx];
+        float xCoord = positions[particleIdx].x;
+        uint xBits = floatToUint(xCoord);
+        digit = (xBits >> bitOffset) & 0xFu;
+    }
+
+    if (localIdx == 0) {
+        for (int d = 0; d < 16; d++) digitCounts[d] = 0;
+    }
+    barrier();
+
+    if (globalIdx < uint(numParticles)) {
+        localOffsets[localIdx] = atomicAdd(digitCounts[digit], 1u);
+    }
+    barrier();
+
+    if (globalIdx < uint(numParticles)) {
+        uint numBlocks = (uint(numParticles) + 255u) / 256u;
+        uint globalDigitOffset = sortTemp[HistOffset + digit * numBlocks + groupIdx];
+        uint writeIdx = globalDigitOffset + localOffsets[localIdx];
+        
+        if (writeIdx < uint(numParticles)) {
+            sortTemp[writeIdx] = particleIdx;
+        }
+    }
+}

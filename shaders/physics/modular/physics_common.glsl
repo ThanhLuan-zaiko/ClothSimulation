@@ -1,17 +1,9 @@
-#version 460 core
-#extension GL_ARB_compute_shader : require
-#extension GL_ARB_shader_storage_buffer_object : require
-#extension GL_KHR_shader_subgroup_basic : require
-#extension GL_KHR_shader_subgroup_arithmetic : require
-
 // GPU-specific settings
 #define USE_TEXTURE_GATHER 0
-// MAX_ITERATIONS is now read from uniform buffer (params1.z = numConstraints, but we use it for iterations)
-// Actually we need to pass it separately. For now, use a reasonable default that works for most cases.
 #define MAX_ITERATIONS_RUNTIME 8
 
 // Work group size for compute shaders
-layout(local_size_x = 128) in;
+layout(local_size_x = 256) in;
 
 // ============================================================================
 // SHADER STORAGE BUFFER OBJECTS (SSBO)
@@ -118,11 +110,17 @@ layout(std140, binding = 2) uniform PhysicsParams {
 // SHARED MEMORY
 // ============================================================================
 
-shared vec3 sharedPositions[128];
+shared vec3 sharedPositions[256];
 
 // ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
+
+/// @brief Converts a float to a sortable uint
+uint floatToUint(float f) {
+    uint u = floatBitsToUint(f);
+    return (u & 0x80000000u) != 0 ? ~u : u | 0x80000000u;
+}
 
 /// @brief Hash function for spatial hashing
 /// @param p World position

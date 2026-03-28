@@ -11,7 +11,7 @@ namespace cloth {
 
 const size_t MAX_PARTICLES = 100000;
 const size_t MAX_CONSTRAINTS = 1000000;
-const int MAX_COLORS = 8;
+const int MAX_COLORS = 16;
 
 struct ParticleDataType {
     glm::vec4 position;
@@ -27,27 +27,34 @@ struct ConstraintDataType {
 };
 
 struct GPUPhysicsConfig {
-    glm::vec3 gravity = glm::vec3(0.0f, -9.81f, 0.0f);
-    float damping = 0.98f;                // Velocity damping (higher = less air resistance)
-    int iterations = 12;                  // Constraint iterations (more = stiffer cloth)
-    float collisionMargin = 0.03f;        // Collision skin thickness
-    float dampingFactor = 0.90f;          // Energy loss on collision
-    float frictionFactor = 0.95f;         // Ground friction coefficient
-    int collisionSubsteps = 8;            // Physics substeps for collision
+    glm::vec3 gravity = glm::vec3(0.0f, -5.0f, 0.0f);  // Reduced gravity for slower fall
+    float damping = 0.990f;             // Slightly lower = more air resistance
+    int iterations = 16;                // Increased iterations for stiffer cloth
+    float collisionMargin = 0.03f;
+    float dampingFactor = 0.92f;        // Higher = less energy loss on collision
+    float frictionFactor = 0.90f;
+    int collisionSubsteps = 8;
 
-    float gravityScale = 4.0f;            // Gravity multiplier for Verlet
-    float airResistance = 0.995f;         // Velocity damping per frame
-    float windStrength = 0.0f;            // Wind force magnitude
+    float gravityScale = 1.0f;          // Neutral gravity scale
+    float airResistance = 0.996f;       // Higher = more air resistance
+    float windStrength = 0.0f;
     glm::vec3 windDirection = glm::vec3(1.0f, 0.0f, 0.0f);
-    float stretchResistance = 0.9f;       // Resistance to stretching
-    float maxVelocity = 50.0f;            // Max particle velocity (m/s)
-    float selfCollisionRadius = 0.30f;    // Particle collision radius
-    float selfCollisionStrength = 1.5f;   // Collision repulsion strength
+    
+    // Advanced Cloth Attributes
+    float structuralStiffness = 1.0f;     // Resistance to stretching
+    float shearStiffness = 0.95f;         // Resistance to shearing
+    float bendStiffness = 0.6f;           // Resistance to bending
+    float skipStiffness = 0.8f;           // Resistance for long-range links
+    
+    float maxVelocity = 25.0f;            // Lower max velocity for more controlled motion
+    float selfCollisionRadius = 1.2f;     // Much larger for reliable collision detection
+    float selfCollisionStrength = 0.95f;  // High strength for separation
+    int collisionIterations = 12;
 
     // Sphere collision parameters
-    float sphereStaticFriction = 0.92f;   // Static friction (when at rest)
-    float sphereDynamicFriction = 0.88f;  // Dynamic friction (when moving)
-    float sphereBounce = 0.05f;           // Restitution coefficient (0 = no bounce)
+    float sphereStaticFriction = 0.85f;   // Static friction (when at rest)
+    float sphereDynamicFriction = 0.80f;  // Dynamic friction (when moving)
+    float sphereBounce = 0.1f;            // Low bounce for realistic behavior
     float sphereGripFactor = 0.5f;        // Surface grip/adhesion
     float staticFrictionThreshold = 0.8f; // Velocity threshold for static friction
 };
@@ -98,7 +105,12 @@ private:
     Shader m_SolveShader;
     Shader m_CollideShader;
     Shader m_ClearGridShader;
-    
+    Shader m_SweepPruneShader;
+    Shader m_RadixSortHistShader;
+    Shader m_RadixSortScanShader;
+    Shader m_RadixSortScatterShader;
+    Shader m_ResolveShader;
+
     bool m_ShadersLoaded;
     bool m_IsHighEndGPU;
     bool m_IsIntelGPU;
@@ -117,6 +129,11 @@ private:
     unsigned int m_GridNextBuffer;
     unsigned int m_UniformBuffer;
     unsigned int m_CollisionUniformBuffer;
+    
+    // Sweep & Prune buffers
+    unsigned int m_SortedIndicesBuffer;
+    unsigned int m_SortTempBuffer;
+    unsigned int m_CollisionPairsBuffer;
 
     GPUPhysicsConfig m_Config;
     CollisionParams m_Collision;

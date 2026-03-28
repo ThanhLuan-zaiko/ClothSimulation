@@ -1,0 +1,52 @@
+#version 460 core
+#extension GL_ARB_compute_shader : require
+#extension GL_ARB_shader_storage_buffer_object : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+
+#include "physics_common.glsl"
+
+layout(std430, binding = 14) buffer SortTempSSBO { uint sortTemp[]; };
+layout(std430, binding = 15) buffer CollisionPairsSSBO { uvec2 collisionPairs[]; };
+
+#define pairCount (sortTemp[numParticles + 8192])
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pairCount) return;
+
+    uvec2 pair = collisionPairs[idx];
+    uint i = pair.x;
+    uint j = pair.y;
+
+    // Skip immediate neighbors in mesh if same cloth to prevent jitter
+    float clothID_A = prevPositions[i].w;
+    float clothID_B = prevPositions[j].w;
+    if (clothID_A == clothID_B) {
+        uint diff = (i > j) ? (i - j) : (j - i);
+        if (diff < 4) return;
+    }
+
+    vec3 posA = positions[i].xyz;
+    vec3 posB = positions[j].xyz;
+
+    vec3 delta = posA - posB;
+    float distSq = dot(delta, delta);
+    float minDistSq = selfCollisionRadius * selfCollisionRadius;
+
+    if (distSq >= minDistSq || distSq < EPSILON * EPSILON) return;
+
+    float d = sqrt(distSq);
+    vec3 n = delta / d;
+    float penetration = selfCollisionRadius - d;
+
+    // Gentle Position correction (PBD style)
+    vec3 correction = n * penetration * 0.5;
+    
+    positions[i].xyz += correction;
+    positions[j].xyz -= correction;
+    
+    // Dampen implicit velocity to prevent "explosion" when layers touch
+    prevPositions[i].xyz += correction * 0.8;
+    prevPositions[j].xyz -= correction * 0.8;
+}

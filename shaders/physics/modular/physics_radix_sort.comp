@@ -1,0 +1,134 @@
+#version 460 core
+#extension GL_ARB_compute_shader : require
+#extension GL_ARB_shader_storage_buffer_object : require
+
+layout(local_size_x = 256) in;
+
+// Global constants
+const uint BLOCK_SIZE = 256u;
+
+// SSBO bindings
+layout(std430, binding = 0) buffer PositionBufferSSBO { vec4 positions[]; };
+layout(std430, binding = 13) buffer SortedIndicesSSBO { uint sortedIndices[]; };
+layout(std430, binding = 14) buffer SortTempSSBO { uint sortTemp[]; };
+
+// UBO
+layout(std140, binding = 2) uniform PhysicsParams {
+    vec4 gravity_dt;
+    vec4 params1;
+    vec4 terrain;
+    vec4 forces;
+    vec4 windDir_stretch;
+    vec4 limits;
+};
+
+#define numParticles (int(params1.y))
+
+// Shared memory
+shared uint sharedData[BLOCK_SIZE];
+
+// Push constants
+layout(push_constant) uniform PushConstants {
+    uint bitIndex;
+    uint numElements;
+    uint numBlocks;
+    uint zeroOffset;  // Total zeros from all previous blocks
+} pc;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    uint localIdx = gl_LocalInvocationID.x;
+    uint groupIdx = gl_WorkGroupID.x;
+    
+    if (idx >= pc.numElements) return;
+    
+    // Get particle and extract bit
+    uint particleIdx = sortedIndices[idx];
+    float xCoord = positions[particleIdx].x;
+    uint xBits = floatBitsToUint(xCoord + 2000.0f);
+    uint bit = (xBits >> pc.bitIndex) & 1u;
+    
+    // ============================================================
+    // PHASE 1: Count zeros in block (parallel reduction)
+    // ============================================================
+    sharedData[localIdx] = (bit == 0) ? 1u : 0u;
+    barrier();
+    
+    // Reduce
+    for (uint s = BLOCK_SIZE / 2; s > 0; s >>= 1) {
+        if (localIdx < s) {
+            sharedData[localIdx] += sharedData[localIdx + s];
+        }
+        barrier();
+    }
+    
+    // Store block zero count
+    uint blockZeros = sharedData[0];
+    if (localIdx == 0) {
+        sortTemp[pc.numElements + groupIdx] = blockZeros;
+    }
+    barrier();
+    
+    // ============================================================
+    // PHASE 2: Calculate position within block
+    // ============================================================
+    // Exclusive scan for position among zeros
+    uint isZero = (bit == 0) ? 1u : 0u;
+    sharedData[localIdx] = isZero;
+    barrier();
+    
+    uint posInZeros = 0u;
+    for (uint i = 0; i < localIdx; i++) {
+        posInZeros += sharedData[i];
+    }
+    
+    // Calculate position among ones
+    uint posInOnes = (localIdx + 1) - (posInZeros + isZero);
+    
+    // ============================================================
+    // PHASE 3: Calculate block offsets
+    // ============================================================
+    uint blockOffsetZeros = 0u;
+    uint blockOffsetOnes = 0u;
+    
+    // Sum zeros from all previous blocks
+    for (uint b = 0; b < groupIdx; b++) {
+        blockOffsetZeros += sortTemp[pc.numElements + b];
+    }
+    
+    // Total zeros = pc.zeroOffset + all block zeros
+    uint totalZeros = pc.zeroOffset;
+    for (uint b = 0; b < pc.numBlocks; b++) {
+        totalZeros += sortTemp[pc.numElements + b];
+    }
+    
+    // Ones start after all zeros
+    blockOffsetOnes = totalZeros;
+    
+    // Subtract zeros from blocks after us to get ones offset for this block
+    uint zerosAfterUs = 0u;
+    for (uint b = groupIdx + 1; b < pc.numBlocks; b++) {
+        zerosAfterUs += sortTemp[pc.numElements + b];
+    }
+    
+    // ============================================================
+    // PHASE 4: Scatter
+    // ============================================================
+    uint writeIdx;
+    if (bit == 0) {
+        writeIdx = pc.zeroOffset + blockOffsetZeros + posInZeros;
+    } else {
+        writeIdx = blockOffsetOnes - zerosAfterUs + posInOnes;
+    }
+    
+    if (writeIdx < pc.numElements) {
+        sortTemp[writeIdx] = particleIdx;
+    }
+    
+    barrier();
+    
+    // Copy back
+    if (writeIdx < pc.numElements) {
+        sortedIndices[writeIdx] = sortTemp[writeIdx];
+    }
+}

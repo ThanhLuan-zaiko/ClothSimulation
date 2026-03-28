@@ -1,0 +1,37 @@
+#version 460 core
+#extension GL_ARB_compute_shader : require
+#extension GL_ARB_shader_storage_buffer_object : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 14) buffer SortTempSSBO { uint sortTemp[]; };
+
+layout(std140, binding = 2) uniform PhysicsParams {
+    vec4 gravity_dt;
+    vec4 params1;
+    vec4 terrain;
+    vec4 forces;
+    vec4 windDir_stretch;
+    vec4 limits;
+};
+
+#define numParticles (int(params1.y))
+#define HistOffset (numParticles)
+uniform uint numBlocks;
+
+void main() {
+    if (gl_WorkGroupID.x > 0) return;
+
+    uint totalElements = numBlocks * 16;
+    uint currentOffset = 0;
+
+    if (gl_LocalInvocationID.x == 0) {
+        for (uint i = 0; i < totalElements; i++) {
+            uint val = sortTemp[HistOffset + i];
+            sortTemp[HistOffset + i] = currentOffset;
+            currentOffset += val;
+        }
+    }
+}

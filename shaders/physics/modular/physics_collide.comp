@@ -4,27 +4,11 @@
 #extension GL_KHR_shader_subgroup_basic : require
 #extension GL_KHR_shader_subgroup_arithmetic : require
 
-layout(local_size_x = 128) in;
-
-// SSBO bindings
-layout(std430, binding = 0) buffer PositionBufferSSBO { vec4 positions[]; };
-layout(std430, binding = 5) buffer PrevPositionBufferSSBO { vec4 prevPositions[]; };
-layout(std430, binding = 4) buffer PinnedFlagsSSBO { float pinnedFlags[]; };
-layout(std430, binding = 11) buffer GridBufferSSBO { uint gridHead[]; };
-layout(std430, binding = 12) buffer NextBufferSSBO { uint gridNext[]; };
-
-// UBO bindings
-layout(std140, binding = 2) uniform PhysicsParams {
-    vec4 gravity_dt;
-    vec4 params1;
-    vec4 terrain;
-    vec4 forces;
-    vec4 windDir_stretch;
-    vec4 limits;
-};
+#include "physics_common.glsl"
 
 layout(std140, binding = 8) uniform CollisionParams {
     vec3 sphereCenter;
+    float padding1;
     float sphereRadius;
     float groundLevel;
     float collisionMargin;
@@ -38,44 +22,28 @@ layout(std140, binding = 8) uniform CollisionParams {
     float staticFrictionThreshold;
 };
 
-// Macros
-#define deltaTime (gravity_dt.w)
-#define numParticles (int(params1.y))
-#define terrainSize (terrain.xy)
-#define terrainHeightScale (terrain.z)
-#define airResistance (forces.x)
-#define windStrength (forces.y)
-#define windDirection (windDir_stretch.xyz)
-#define maxVelocity (limits.x)
-#define selfCollisionRadius (limits.y)
-#define selfCollisionStrength (limits.z)
-#define gravity (gravity_dt.xyz)
-#define gravityScale (terrain.w)
-
-const uint GRID_SIZE = 32768u;
-const uint GRID_MASK = GRID_SIZE - 1u;
-const float CELL_SIZE = 1.05f;
-const float EPSILON = 0.0001f;
-
-// Terrain height sampling
 uniform sampler2D terrainHeightmap;
 
 float getTerrainHeight(float x, float z) {
     if (terrainSize.x <= 0.0f || terrainSize.y <= 0.0f) return groundLevel;
     float u = (x + terrainSize.x * 0.5f) / terrainSize.x;
     float v = (z + terrainSize.y * 0.5f) / terrainSize.y;
-    float height = textureLod(terrainHeightmap, vec2(clamp(u, 0.0, 1.0), clamp(v, 0.0, 1.0)), 0.0).r;
-    return max(groundLevel, (height - 0.5f) * terrainHeightScale);
+    vec2 uv = clamp(vec2(u, v), 0.0, 1.0);
+    float h = textureLod(terrainHeightmap, uv, 0.0).r;
+    return max(groundLevel, h);
 }
 
-uint hashPos(vec3 p) {
-    ivec3 cell = ivec3(floor(p / CELL_SIZE));
-    return (uint(cell.x) * 73856093u ^ uint(cell.y) * 19349663u ^ uint(cell.z) * 83492791u) & GRID_MASK;
+vec3 getTerrainNormal(float x, float z) {
+    float step = 0.15;
+    float hL = getTerrainHeight(x - step, z);
+    float hR = getTerrainHeight(x + step, z);
+    float hD = getTerrainHeight(x, z - step);
+    float hU = getTerrainHeight(x, z + step);
+    return normalize(vec3(hL - hR, 2.0 * step, hD - hU));
 }
 
 void main() {
     uint globalIdx = gl_GlobalInvocationID.x;
-
     if (globalIdx >= uint(numParticles)) return;
     if (pinnedFlags[globalIdx] >= 0.5f) return;
 
@@ -83,134 +51,65 @@ void main() {
     vec3 prevPos = prevPositions[globalIdx].xyz;
 
     // ============================================================
-    // SPHERE COLLISION
+    // SPHERE COLLISION - Improved Static Friction (Sticky)
     // ============================================================
-    // Note: We use uniform values from CollisionParams UBO.
-    // However, some OpenGL drivers may not respect uniform buffer bindings reliably,
-    // so we keep hardcoded defaults as a safety fallback.
-    // Default sphere: center=(0,10,0), radius=3.0 (matches main.cpp initialization)
-    
-    vec3 sCenter = sphereCenter;
-    float sRadius = sphereRadius;
-    float sMargin = collisionMargin;
-    
-    // Fallback if uniform buffer not read correctly
-    if (sRadius <= 0.0f) {
-        sCenter = vec3(0.0, 10.0, 0.0);
-        sRadius = 3.0f;
-        sMargin = 0.05f;
-    }
-    
-    vec3 toSphere = pos - sCenter;
+    vec3 toSphere = pos - sphereCenter;
     float dist = length(toSphere);
-    float minDist = sRadius + sMargin;
+    float minDist = sphereRadius + collisionMargin;
 
     if (dist < minDist && dist > EPSILON) {
         vec3 normal = toSphere / dist;
-        pos = sCenter + normal * minDist;
-        vec3 velocity = (pos - prevPos) / deltaTime;
-        float vn = dot(velocity, normal);
-
-        if (vn < 0.0f) {
-            // Moving toward sphere - apply bounce + friction
-            vec3 reflectedVel = velocity - (1.0f + sphereBounce) * vn * normal;
-            vec3 tangentVel = reflectedVel - dot(reflectedVel, normal) * normal;
-            float tangentSpeed = length(tangentVel);
-
-            if (tangentSpeed > EPSILON) {
-                vec3 tangentDir = tangentVel / tangentSpeed;
-                float frictionApply = min(sphereDynamicFriction * abs(vn), tangentSpeed);
-                tangentSpeed -= frictionApply;
-                tangentVel = tangentDir * tangentSpeed;
-            }
-            velocity = dot(reflectedVel, normal) * normal + tangentVel;
-            velocity *= dampingFactor;
+        vec3 correctedPos = sphereCenter + normal * minDist;
+        
+        vec3 vel = pos - prevPos;
+        float vNormal = dot(vel, normal);
+        vec3 vTangent = vel - vNormal * normal;
+        float tangentSpeed = length(vTangent);
+        
+        // Apply Static Friction: Kill tangent movement if below threshold
+        if (tangentSpeed < staticFrictionThreshold * deltaTime * 1.2) {
+            vTangent = vec3(0.0);
         } else {
-            // Resting on sphere - apply static friction
-            vec3 tangentVel = velocity - vn * normal;
-            float tangentSpeed = length(tangentVel);
-            if (tangentSpeed > EPSILON) {
-                vec3 tangentDir = tangentVel / tangentSpeed;
-                float frictionApply = min(tangentSpeed, sphereStaticFriction * 0.3f);
-                velocity -= tangentDir * frictionApply;
-            }
+            // Apply Dynamic Friction
+            float friction = sphereDynamicFriction * sphereGripFactor * 1.5;
+            vTangent *= max(0.0, 1.0 - friction);
         }
-        prevPos = pos - velocity * deltaTime;
+        
+        // Total Normal Damping: No bounce, stick to surface
+        if (vNormal < 0.0) vNormal = 0.0;
+        
+        pos = correctedPos;
+        prevPos = pos - vTangent;
     }
 
     // ============================================================
-    // GROUND/TERRAIN COLLISION
+    // TERRAIN COLLISION - Natural Grip
     // ============================================================
     float terrainH = getTerrainHeight(pos.x, pos.z);
-    float groundMargin = collisionMargin;
+    float totalMargin = collisionMargin + 0.02;
 
-    if (pos.y < terrainH + groundMargin) {
-        pos.y = terrainH + groundMargin;
-        vec3 velocity = (pos - prevPos) / deltaTime;
-        float vn = dot(velocity, vec3(0.0, 1.0, 0.0));
-
-        if (vn < 0.0f) {
-            float e = 0.1f;  // Low restitution for ground
-            vec3 normalImpulse = -(1.0f + e) * vn * vec3(0.0, 1.0, 0.0);
-            vec3 tangentVel = velocity - vn * vec3(0.0, 1.0, 0.0);
-            float tangentSpeed = length(tangentVel);
-
-            if (tangentSpeed > EPSILON) {
-                vec3 tangentDir = tangentVel / tangentSpeed;
-                float frictionApply = min(frictionFactor * abs(vn), tangentSpeed);
-                tangentSpeed -= frictionApply;
-                tangentVel = tangentDir * tangentSpeed;
-            }
-            velocity = normalImpulse + tangentVel;
-            velocity *= dampingFactor;
+    if (pos.y < terrainH + totalMargin) {
+        vec3 normal = getTerrainNormal(pos.x, pos.z);
+        vec3 correctedPos = vec3(pos.x, terrainH + totalMargin, pos.z);
+        
+        vec3 vel = pos - prevPos;
+        float vNormal = dot(vel, normal);
+        vec3 vTangent = vel - vNormal * normal;
+        float tangentSpeed = length(vTangent);
+        
+        if (tangentSpeed < staticFrictionThreshold * deltaTime) {
+            vTangent = vec3(0.0);
+        } else {
+            float friction = max(frictionFactor, 0.8);
+            vTangent *= max(0.0, 1.0 - friction * 0.5);
         }
-        prevPos = pos - velocity * deltaTime;
+        
+        if (vNormal < 0.0) vNormal = 0.0;
+        
+        pos = correctedPos;
+        prevPos = pos - vTangent;
     }
 
-    // ============================================================
-    // SELF-COLLISION (spatial hash grid)
-    // ============================================================
-    ivec3 centerCell = ivec3(floor(pos / CELL_SIZE));
-    
-    for (int dz = -1; dz <= 1; dz++) {
-        for (int dy = -1; dy <= 1; dy++) {
-            for (int dx = -1; dx <= 1; dx++) {
-                uint h = (uint(centerCell.x+dx) * 73856093u ^
-                          uint(centerCell.y+dy) * 19349663u ^
-                          uint(centerCell.z+dz) * 83492791u) & GRID_MASK;
-                
-                uint currIdx = gridHead[h];
-                for (int iter = 0; iter < 16 && currIdx != 0xFFFFFFFF; iter++) {
-                    if (currIdx >= uint(numParticles)) break;
-                    
-                    if (currIdx != globalIdx) {
-                        vec3 otherPos = positions[currIdx].xyz;
-                        vec3 delta = pos - otherPos;
-                        float distSq = dot(delta, delta);
-                        float minDistSq = selfCollisionRadius * selfCollisionRadius;
-                        
-                        if (distSq < minDistSq && distSq > EPSILON * EPSILON) {
-                            float d = sqrt(distSq);
-                            if (d >= 0.15f) {  // Skip connected neighbors
-                                vec3 n = delta / d;
-                                vec3 vel = (pos - prevPos) / deltaTime;
-                                float vn = dot(vel, n);
-                                if (vn < 0.0f) {
-                                    vel += n * (-vn * selfCollisionStrength * 0.5f);
-                                    prevPos = pos - vel * deltaTime;
-                                }
-                            }
-                        }
-                    }
-                    currIdx = gridNext[currIdx];
-                }
-            }
-        }
-    }
-
-    // ============================================================
-    // WRITE BACK
-    // ============================================================
     positions[globalIdx].xyz = pos;
     prevPositions[globalIdx].xyz = prevPos;
 }

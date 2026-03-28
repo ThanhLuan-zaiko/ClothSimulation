@@ -1,125 +1,39 @@
+#version 460 core
+#extension GL_ARB_compute_shader : require
+#extension GL_ARB_shader_storage_buffer_object : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+
 #include "physics_common.glsl"
-
-/// @brief Simple hash-based noise for wind turbulence
-float hash11(float p) {
-    p = fract(p * 0.1031);
-    p *= p + 33.33;
-    p *= p + p;
-    return fract(p);
-}
-
-/// @brief 3D noise for wind variation
-float noise3D(vec3 x) {
-    vec3 p = floor(x);
-    vec3 f = fract(x);
-    f = f * f * (3.0 - 2.0 * f);
-    float n = p.x + p.y * 57.0 + 113.0 * p.z;
-    return mix(mix(mix(hash11(n + 0.0), hash11(n + 1.0), f.x),
-                   mix(hash11(n + 57.0), hash11(n + 58.0), f.x), f.y),
-               mix(mix(hash11(n + 113.0), hash11(n + 114.0), f.x),
-                   mix(hash11(n + 170.0), hash11(n + 171.0), f.x), f.y), f.z);
-}
-
-/// @brief Fractal Brownian Motion for more natural wind variation
-float fbm(vec3 x, int octaves) {
-    float value = 0.0;
-    float amplitude = 0.5;
-    float frequency = 1.0;
-    for (int i = 0; i < octaves; i++) {
-        value += amplitude * noise3D(x * frequency);
-        frequency *= 2.0;
-        amplitude *= 0.5;
-    }
-    return value;
-}
 
 void main() {
     uint globalIdx = gl_GlobalInvocationID.x;
-    uint localIdx = gl_LocalInvocationID.x;
+    if (globalIdx >= uint(numParticles)) return;
+    if (pinnedFlags[globalIdx] >= 0.5f) return;
 
-    // ALL threads must participate in shared memory caching
-    if (globalIdx < uint(numParticles)) {
-        sharedPositions[localIdx] = positions[globalIdx].xyz;
-    } else {
-        sharedPositions[localIdx] = vec3(0.0f);
+    vec3 curPos = positions[globalIdx].xyz;
+    vec3 prevPos = prevPositions[globalIdx].xyz;
+
+    // ============================================================
+    // VERLET INTEGRATION (only place this happens)
+    // x_new = x_cur + (x_cur - x_prev) * damping + a * dt²
+    // ============================================================
+    vec3 vel = curPos - prevPos;
+    vel *= damping;
+    vel += gravity * deltaTime * deltaTime;
+    
+    // Velocity clamp
+    float maxV = maxVelocity;
+    float vLen = length(vel);
+    if (vLen > maxV) {
+        vel = (vel / max(vLen, 0.0001)) * maxV;
     }
+    
+    vec3 nextPos = curPos + vel;
 
-    // CRITICAL: All threads in workgroup must reach this barrier
-    barrier();
+    // Update buffers
+    prevPositions[globalIdx].xyz = curPos;  // prev = old current
+    positions[globalIdx].xyz = nextPos;     // current = new position
 
-    // Verlet Integration with Wind Forces
-    if (globalIdx < uint(numParticles)) {
-        if (pinnedFlags[globalIdx] < 0.5f) {
-            vec3 pos = sharedPositions[localIdx];
-            vec3 prevPos = prevPositions[globalIdx].xyz;
-
-            // Calculate velocity from position delta with damping
-            vec3 velocity = (pos - prevPos) * airResistance;
-
-            // Base gravity acceleration
-            float iterFactor = clamp(float(MAX_ITERATIONS) / 8.0f, 0.7f, 1.0f);
-            vec3 acceleration = gravity * gravityScale;
-
-            // ============================================================
-            // WIND FORCE with Turbulence
-            // ============================================================
-            if (windStrength > 0.001f) {
-                // Time-varying wind using simulation time (approximated via frame count)
-                float time = float(gl_GlobalInvocationID.x) * 0.001;
-                
-                // Base wind direction
-                vec3 windVel = windDirection * windStrength;
-                
-                // Add turbulence using noise
-                float turbulence = fbm(pos * 0.5 + vec3(0.0, time * 2.0, 0.0), 3);
-                turbulence = turbulence * 2.0 - 1.0; // Range: [-1, 1]
-                
-                // Perpendicular gust (vertical variation)
-                vec3 gust = vec3(
-                    noise3D(vec3(pos.z * 0.3, pos.y * 0.3, time)) * 0.5 - 0.25,
-                    abs(noise3D(vec3(pos.x * 0.3, pos.z * 0.3, time * 1.5))) * 0.3,
-                    noise3D(vec3(pos.y * 0.3, pos.x * 0.3, time * 0.5)) * 0.5 - 0.25
-                );
-                
-                // Combine wind components
-                windVel += gust * windStrength * 0.5;
-                windVel += vec3(turbulence * windStrength * 0.3, 0.0, 0.0);
-                
-                // Apply wind force based on particle velocity (drag)
-                vec3 relVel = windVel - velocity;
-                float dragCoeff = 0.8 * iterFactor;
-                acceleration += relVel * dragCoeff;
-            }
-
-            // Apply acceleration
-            vec3 nextPos = pos + velocity + acceleration * deltaTime * deltaTime;
-
-            // Speed limit with soft clamping
-            vec3 actualVel = (nextPos - pos) / deltaTime;
-            float speed = length(actualVel);
-            if (speed > maxVelocity) {
-                // Soft clamp: gradually reduce excess velocity
-                float excess = speed - maxVelocity;
-                float clampFactor = 1.0 - (excess / (speed + 0.001)) * 0.5;
-                actualVel *= clampFactor;
-                nextPos = pos + actualVel * deltaTime;
-            }
-
-            // Update positions
-            prevPositions[globalIdx].xyz = pos;
-            positions[globalIdx].xyz = nextPos;
-            sharedPositions[localIdx] = nextPos;
-        }
-    }
-
-    // ALL threads must reach this barrier too
-    barrier();
-
-    // Grid population - ALL threads must participate
-    if (globalIdx < uint(numParticles)) {
-        vec3 pos = sharedPositions[localIdx];
-        uint h = hashPos(pos);
-        uint oldHead = atomicExchange(gridHead[h], globalIdx);
-        gridNext[globalIdx] = oldHead;
-    }
+    // NOTE: Spatial hash grid is currently unused in favor of Radix Sort Broadphase
 }

@@ -1,0 +1,48 @@
+#version 460 core
+#extension GL_ARB_compute_shader : require
+#extension GL_ARB_shader_storage_buffer_object : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+
+#include "physics_common.glsl"
+
+const uint MAX_COLLISION_PAIRS = 524288u;
+
+layout(std430, binding = 13) buffer SortedIndicesSSBO { uint sortedIndices[]; };
+layout(std430, binding = 14) buffer SortTempSSBO { uint sortTemp[]; };
+layout(std430, binding = 15) buffer CollisionPairsSSBO { uvec2 collisionPairs[]; };
+
+uint pairCountIdx = uint(numParticles) + 8192;
+
+void addPair(uvec2 pair) {
+    uint idx = atomicAdd(sortTemp[pairCountIdx], 1u);
+    if (idx < MAX_COLLISION_PAIRS) {
+        collisionPairs[idx] = pair;
+    }
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= uint(numParticles)) return;
+
+    uint myIdx = sortedIndices[idx];
+    vec3 myPos = positions[myIdx].xyz;
+    float myClothID = prevPositions[myIdx].w;
+
+    float broadRadius = selfCollisionRadius * 1.3f;
+
+    for (uint j = idx + 1; j < uint(numParticles); j++) {
+        uint otherIdx = sortedIndices[j];
+        vec3 otherPos = positions[otherIdx].xyz;
+
+        if (otherPos.x - myPos.x > broadRadius) break;
+
+        float otherClothID = prevPositions[otherIdx].w;
+        if (myClothID == otherClothID) continue;
+
+        if (abs(otherPos.y - myPos.y) > broadRadius) continue;
+        if (abs(otherPos.z - myPos.z) > broadRadius) continue;
+
+        addPair(uvec2(myIdx, otherIdx));
+    }
+}

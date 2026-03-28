@@ -224,6 +224,12 @@
     <None Include="shaders\physics\modular\physics_solve.comp" />
     <None Include="shaders\physics\modular\physics_collide.comp" />
     <None Include="shaders\physics\modular\physics_clear_grid.comp" />
+    <None Include="shaders\physics\modular\physics_sweep_prune.comp" />
+    <None Include="shaders\physics\modular\physics_resolve.comp" />
+    <None Include="shaders\physics\modular\physics_radix_sort.comp" />
+    <None Include="shaders\physics\modular\physics_radix_sort_hist.comp" />
+    <None Include="shaders\physics\modular\physics_radix_sort_scan.comp" />
+    <None Include="shaders\physics\modular\physics_radix_sort_scatter.comp" />
   </ItemGroup>
 
   <!-- Copy shaders to output directory -->
@@ -247,6 +253,12 @@
     <Copy SourceFiles="$(ProjectDir)shaders\physics\modular\physics_solve.comp" DestinationFiles="$(OutDir)shaders\physics\modular\physics_solve.comp" />
     <Copy SourceFiles="$(ProjectDir)shaders\physics\modular\physics_collide.comp" DestinationFiles="$(OutDir)shaders\physics\modular\physics_collide.comp" />
     <Copy SourceFiles="$(ProjectDir)shaders\physics\modular\physics_clear_grid.comp" DestinationFiles="$(OutDir)shaders\physics\modular\physics_clear_grid.comp" />
+    <Copy SourceFiles="$(ProjectDir)shaders\physics\modular\physics_sweep_prune.comp" DestinationFiles="$(OutDir)shaders\physics\modular\physics_sweep_prune.comp" />
+    <Copy SourceFiles="$(ProjectDir)shaders\physics\modular\physics_resolve.comp" DestinationFiles="$(OutDir)shaders\physics\modular\physics_resolve.comp" />
+    <Copy SourceFiles="$(ProjectDir)shaders\physics\modular\physics_radix_sort.comp" DestinationFiles="$(OutDir)shaders\physics\modular\physics_radix_sort.comp" />
+    <Copy SourceFiles="$(ProjectDir)shaders\physics\modular\physics_radix_sort_hist.comp" DestinationFiles="$(OutDir)shaders\physics\modular\physics_radix_sort_hist.comp" />
+    <Copy SourceFiles="$(ProjectDir)shaders\physics\modular\physics_radix_sort_scan.comp" DestinationFiles="$(OutDir)shaders\physics\modular\physics_radix_sort_scan.comp" />
+    <Copy SourceFiles="$(ProjectDir)shaders\physics\modular\physics_radix_sort_scatter.comp" DestinationFiles="$(OutDir)shaders\physics\modular\physics_radix_sort_scatter.comp" />
   </Target>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
