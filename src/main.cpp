@@ -133,6 +133,19 @@ int main() {
         GetAssetPath("shaders/cloth/cloth.frag")
     );
 
+    // Load SSAO shaders
+    state.ssaoShader = Shader::CreateComputeShaderFromSource(Shader::LoadShaderSource(GetAssetPath("shaders/postprocess/ssao.comp")));
+    state.ssaoBlurShader = Shader::CreateComputeShaderFromSource(Shader::LoadShaderSource(GetAssetPath("shaders/postprocess/ssao_blur.comp")));
+    state.depthNormalShader = Shader::CreateFromFile(
+        GetAssetPath("shaders/postprocess/depth_normal.vert"),
+        GetAssetPath("shaders/postprocess/depth_normal.frag")
+    );
+
+    // Initialize SSAO buffer with window size
+    int width, height;
+    app.GetWindowSize(&width, &height);
+    state.ssaoBuffer = new SSAOBuffer(width, height);
+
     // Initialize world (scan textures, create skybox)
     state.world.Initialize(GetAssetPath("assets/textures/lands/"));
 
@@ -150,12 +163,21 @@ int main() {
     // Note: Quality level already set in AppState::InitializeGL() before physicsWorld.Initialize()
     GPUPhysicsConfig gpuPhysicsConfig;
     gpuPhysicsConfig.gravity = glm::vec3(0.0f, -9.81f, 0.0f);
-    gpuPhysicsConfig.damping = 0.98f;
+    gpuPhysicsConfig.damping = 0.995f;
     gpuPhysicsConfig.iterations = state.gpuInfo.physicsIterations;  // LOW=2, MEDIUM=3, HIGH=4, ULTRA=5
-    gpuPhysicsConfig.collisionMargin = 0.05f;
+    gpuPhysicsConfig.collisionMargin = 0.35f;  // INCREASED: Much larger margin for earlier collision detection
     gpuPhysicsConfig.dampingFactor = 0.85f;
-    gpuPhysicsConfig.frictionFactor = 0.92f;
-    gpuPhysicsConfig.collisionSubsteps = state.gpuInfo.collisionSubsteps;
+    gpuPhysicsConfig.frictionFactor = 0.80f;
+    gpuPhysicsConfig.collisionSubsteps = 32;   // INCREASED: More substeps for better collision detection
+    gpuPhysicsConfig.ccdSubsteps = 32.0f;      // INCREASED: More CCD sub-intervals
+    gpuPhysicsConfig.conservativeFactor = 2.0f; // INCREASED: More conservative advancement
+    gpuPhysicsConfig.maxVelocity = 15.0f;      // LOWERED: More controlled motion
+    gpuPhysicsConfig.sphereStaticFriction = 0.92f;
+    gpuPhysicsConfig.sphereDynamicFriction = 0.20f;
+    gpuPhysicsConfig.sphereWrapFactor = 0.80f;
+    gpuPhysicsConfig.staticFrictionThreshold = 0.8f;
+    gpuPhysicsConfig.sleepingThreshold = 0.30f;
+    gpuPhysicsConfig.terrainDamping = 0.08f;
     
     // Update config (shader already compiled with correct iterations in InitializeGL)
     state.physicsWorld.SetConfig(gpuPhysicsConfig);

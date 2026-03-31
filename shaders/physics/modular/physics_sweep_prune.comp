@@ -4,13 +4,11 @@
 #extension GL_KHR_shader_subgroup_basic : require
 #extension GL_KHR_shader_subgroup_arithmetic : require
 
+layout(local_size_x = 256) in;
+
 #include "physics_common.glsl"
 
 const uint MAX_COLLISION_PAIRS = 524288u;
-
-layout(std430, binding = 13) buffer SortedIndicesSSBO { uint sortedIndices[]; };
-layout(std430, binding = 14) buffer SortTempSSBO { uint sortTemp[]; };
-layout(std430, binding = 15) buffer CollisionPairsSSBO { uvec2 collisionPairs[]; };
 
 uint pairCountIdx = uint(numParticles) + 8192;
 

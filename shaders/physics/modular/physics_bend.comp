@@ -1,0 +1,215 @@
+#version 460 core
+#extension GL_ARB_compute_shader : require
+#extension GL_ARB_shader_storage_buffer_object : require
+
+layout(local_size_x = 256) in;
+
+#include "physics_common.glsl"
+
+uniform int numBendingConstraints;
+
+// ============================================================================
+// ATOMIC OPERATIONS
+// ============================================================================
+
+void atomicAddVec3(uint baseIdx, vec3 delta) {
+    const float scale = 10000.0;
+    atomicAdd(deltaPositions[baseIdx * 3 + 0], int(delta.x * scale));
+    atomicAdd(deltaPositions[baseIdx * 3 + 1], int(delta.y * scale));
+    atomicAdd(deltaPositions[baseIdx * 3 + 2], int(delta.z * scale));
+}
+
+// ============================================================================
+// CONFIGURATION
+// ============================================================================
+
+const float IMPLICIT_DAMPING = 0.98;
+const float STRAIN_LIMIT_EPSILON = 0.01;
+const float MAX_STRAIN_RATE = 0.1;
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+vec3 applyImplicitDamping(vec3 delta, vec3 velocity) {
+    float velFactor = dot(delta, normalize(velocity + vec3(EPSILON)));
+    if (velFactor > 0.0) {
+        delta *= IMPLICIT_DAMPING;
+    }
+    return delta;
+}
+
+// ============================================================================
+// STRAIN LIMITING
+// ============================================================================
+
+void applyStrainLimiting(uint p1, uint p2, float inRestLength, float inMaxStrain)
+{
+    vec3 pos1 = positions[p1].xyz;
+    vec3 pos2 = positions[p2].xyz;
+
+    vec3 delta = pos2 - pos1;
+    float currentLength = length(delta);
+
+    if (currentLength < EPSILON) return;
+
+    float strain = (currentLength - inRestLength) / inRestLength;
+
+    if (abs(strain) > STRAIN_LIMIT_EPSILON) {
+        float maxExtension = inRestLength * (1.0 + inMaxStrain);
+        float maxCompression = inRestLength * (1.0 - inMaxStrain);
+
+        float targetLength = currentLength;
+        if (currentLength > maxExtension) {
+            targetLength = maxExtension;
+        } else if (currentLength < maxCompression) {
+            targetLength = maxCompression;
+        }
+
+        vec3 correction = delta * ((targetLength - currentLength) / currentLength) * 0.5;
+
+        if (pinnedFlags[p1] < 0.5) {
+            atomicAddVec3(p1, correction);
+        }
+        if (pinnedFlags[p2] < 0.5) {
+            atomicAddVec3(p2, -correction);
+        }
+    }
+}
+
+// ============================================================================
+// DIHEDRAL BENDING
+// ============================================================================
+
+float calculateDihedralAngle(vec3 x1, vec3 x2, vec3 x3, vec3 x4) {
+    vec3 e = x2 - x1;
+    float elen = length(e);
+    if (elen < EPSILON) return 0.0;
+    
+    vec3 n1 = cross(x3 - x1, e);
+    float n1len = length(n1);
+    if (n1len < EPSILON) return 0.0;
+    n1 /= n1len;
+    
+    vec3 n2 = cross(e, x4 - x1);
+    float n2len = length(n2);
+    if (n2len < EPSILON) return 0.0;
+    n2 /= n2len;
+    
+    float cosAngle = clamp(dot(n1, n2), -1.0, 1.0);
+    float sinAngle = dot(cross(n1, n2), normalize(e));
+    
+    return atan(sinAngle, cosAngle);
+}
+
+void calculateBendingGradients(
+    vec3 x1, vec3 x2, vec3 x3, vec3 x4,
+    out vec3 grad3, out vec3 grad4)
+{
+    vec3 e = x2 - x1;
+    float elen = length(e);
+    if (elen < EPSILON) {
+        grad3 = vec3(0.0);
+        grad4 = vec3(0.0);
+        return;
+    }
+    
+    vec3 n1 = cross(x3 - x1, e);
+    float n1len = length(n1);
+    if (n1len < EPSILON) {
+        grad3 = vec3(0.0);
+        grad4 = vec3(0.0);
+        return;
+    }
+    n1 /= n1len;
+    
+    vec3 n2 = cross(e, x4 - x1);
+    float n2len = length(n2);
+    if (n2len < EPSILON) {
+        grad3 = vec3(0.0);
+        grad4 = vec3(0.0);
+        return;
+    }
+    n2 /= n2len;
+    
+    float d = clamp(dot(n1, n2), -1.0, 1.0);
+    
+    grad3 = (cross(e, n2) + cross(n1, e) * d) / n1len;
+    grad4 = (cross(e, n1) + cross(n2, e) * d) / n2len;
+}
+
+// ============================================================================
+// MAIN
+// ============================================================================
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= uint(numBendingConstraints)) return;
+
+    BendingConstraintDataType bc = bendConstraints[idx];
+    int p1 = bc.indices.x;
+    int p2 = bc.indices.y;
+    int p3 = bc.indices.z;
+    int p4 = bc.indices.w;
+
+    vec3 x1 = positions[p1].xyz;
+    vec3 x2 = positions[p2].xyz;
+    vec3 x3 = positions[p3].xyz;
+    vec3 x4 = positions[p4].xyz;
+
+    // Phase 1: Calculate dihedral angle
+    vec3 e = x2 - x1;
+    float elen = length(e);
+    if (elen < EPSILON) return;
+
+    float currentAngle = calculateDihedralAngle(x1, x2, x3, x4);
+    float restAngle = bc.params.x;
+    float angleError = currentAngle - restAngle;
+
+    if (abs(angleError) < 0.001) return;
+
+    // Phase 2: Calculate gradients
+    vec3 grad3, grad4;
+    calculateBendingGradients(x1, x2, x3, x4, grad3, grad4);
+    
+    float grad3Len = length(grad3);
+    float grad4Len = length(grad4);
+    
+    if (grad3Len < EPSILON && grad4Len < EPSILON) return;
+
+    // Phase 3: Implicit integration
+    float stiffness = bc.params.y * bc.padding.x;
+    stiffness = min(stiffness * 0.08, 0.5);
+    
+    float w3 = (pinnedFlags[p3] < 0.5) ? 1.0 : 0.0;
+    float w4 = (pinnedFlags[p4] < 0.5) ? 1.0 : 0.0;
+    float sumW = w3 + w4;
+    
+    if (sumW < EPSILON) return;
+
+    float lambda = angleError * stiffness / sumW;
+    
+    vec3 vel3 = positions[p3].xyz - prevPositions[p3].xyz;
+    vec3 vel4 = positions[p4].xyz - prevPositions[p4].xyz;
+    
+    if (w3 > 0.5) {
+        vec3 delta3 = -grad3 * lambda * w3;
+        delta3 = applyImplicitDamping(delta3, vel3);
+        atomicAddVec3(p3, delta3);
+    }
+    
+    if (w4 > 0.5) {
+        vec3 delta4 = -grad4 * lambda * w4;
+        delta4 = applyImplicitDamping(delta4, vel4);
+        atomicAddVec3(p4, delta4);
+    }
+
+    // Phase 4: Strain limiting on adjacent edges
+    float edgeRestLength = elen;
+    applyStrainLimiting(uint(p1), uint(p2), edgeRestLength, MAX_STRAIN_RATE);
+    
+    float restLength3 = length(x3 - x1);
+    float restLength4 = length(x4 - x2);
+    applyStrainLimiting(uint(p1), uint(p3), restLength3, MAX_STRAIN_RATE);
+    applyStrainLimiting(uint(p2), uint(p4), restLength4, MAX_STRAIN_RATE);
+}

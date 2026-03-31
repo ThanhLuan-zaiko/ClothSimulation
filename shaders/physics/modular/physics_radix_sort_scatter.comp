@@ -4,10 +4,9 @@
 #extension GL_KHR_shader_subgroup_basic : require
 #extension GL_KHR_shader_subgroup_arithmetic : require
 
-#include "physics_common.glsl"
+layout(local_size_x = 256) in;
 
-layout(std430, binding = 13) buffer SourceSSBO { uint sourceIndices[]; };
-layout(std430, binding = 14) buffer SortTempSSBO { uint sortTemp[]; };
+#include "physics_common.glsl"
 
 #define HistOffset (numParticles)
 uniform uint bitOffset;
@@ -22,7 +21,7 @@ void main() {
     uint particleIdx = 0;
     uint digit = 0;
     if (globalIdx < uint(numParticles)) {
-        particleIdx = sourceIndices[globalIdx];
+        particleIdx = sortedIndices[globalIdx];
         float xCoord = positions[particleIdx].x;
         uint xBits = floatToUint(xCoord);
         digit = (xBits >> bitOffset) & 0xFu;
@@ -42,7 +41,7 @@ void main() {
         uint numBlocks = (uint(numParticles) + 255u) / 256u;
         uint globalDigitOffset = sortTemp[HistOffset + digit * numBlocks + groupIdx];
         uint writeIdx = globalDigitOffset + localOffsets[localIdx];
-        
+
         if (writeIdx < uint(numParticles)) {
             sortTemp[writeIdx] = particleIdx;
         }

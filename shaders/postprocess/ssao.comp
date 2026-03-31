@@ -1,0 +1,63 @@
+#version 460 core
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(rgba32f, binding = 0) uniform readonly image2D img_Normal;
+layout(r32f, binding = 1) uniform readonly image2D img_Depth;
+layout(r32f, binding = 2) uniform writeonly image2D img_SSAO;
+
+uniform mat4 u_Projection;
+uniform vec3 u_Samples[64];
+uniform float u_Radius = 0.5;
+uniform float u_Bias = 0.025;
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(img_SSAO);
+    if (pixel.x >= size.x || pixel.y >= size.y) return;
+
+    vec3 normal = imageLoad(img_Normal, pixel).rgb;
+    float fragDepth = imageLoad(img_Depth, pixel).r;
+    if (fragDepth < 0.001) {
+        imageStore(img_SSAO, pixel, vec4(1.0));
+        return;
+    }
+
+    // Reconstruct view-space position
+    vec2 texCoord = (vec2(pixel) + 0.5) / vec2(size);
+    vec2 ndc = texCoord * 2.0 - 1.0;
+    vec3 fragPos;
+    fragPos.z = -fragDepth;
+    fragPos.x = (ndc.x * -fragPos.z) / u_Projection[0][0];
+    fragPos.y = (ndc.y * -fragPos.z) / u_Projection[1][1];
+
+    // Create TBN matrix for oriented hemisphere
+    vec3 randomVec = normalize(vec3(fract(sin(dot(texCoord, vec2(12.9898, 78.233))) * 43758.5453),
+                                     fract(cos(dot(texCoord, vec2(12.9898, 78.233))) * 43758.5453), 0.0));
+    vec3 tangent = normalize(randomVec - normal * dot(randomVec, normal));
+    vec3 bitangent = cross(normal, tangent);
+    mat3 TBN = mat3(tangent, bitangent, normal);
+
+    float occlusion = 0.0;
+    for(int i = 0; i < 64; ++i) {
+        // Sample position in view space
+        vec3 samplePos = TBN * u_Samples[i];
+        samplePos = fragPos + samplePos * u_Radius;
+        
+        // Project sample to get UV coordinates
+        vec4 offset = vec4(samplePos, 1.0);
+        offset = u_Projection * offset;
+        offset.xyz /= offset.w;
+        offset.xyz = offset.xyz * 0.5 + 0.5;
+        
+        ivec2 offsetPixel = ivec2(offset.xy * vec2(size));
+        float sampleDepth = imageLoad(img_Depth, offsetPixel).r;
+        
+        // Range check and occlusion accumulation
+        float rangeCheck = smoothstep(0.0, 1.0, u_Radius / abs(fragDepth - sampleDepth));
+        occlusion += (sampleDepth >= -samplePos.z + u_Bias ? 1.0 : 0.0) * rangeCheck;
+    }
+
+    occlusion = 1.0 - (occlusion / 64.0);
+    imageStore(img_SSAO, pixel, vec4(pow(occlusion, 2.0)));
+}

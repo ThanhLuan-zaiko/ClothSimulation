@@ -111,4 +111,11 @@ void Application::Quit() {
     m_Running = false;
 }
 
+void Application::GetWindowSize(int* width, int* height) const {
+    if (m_Window) {
+        *width = (int)m_Window->GetWidth();
+        *height = (int)m_Window->GetHeight();
+    }
+}
+
 } // namespace cloth

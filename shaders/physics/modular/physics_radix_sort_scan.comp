@@ -6,15 +6,17 @@
 
 layout(local_size_x = 256) in;
 
-layout(std430, binding = 14) buffer SortTempSSBO { uint sortTemp[]; };
+layout(std430, binding = 11) buffer SortTempSSBO { uint sortTemp[]; };
 
-layout(std140, binding = 2) uniform PhysicsParams {
+layout(std140, binding = 0) uniform PhysicsParams {
     vec4 gravity_dt;
     vec4 params1;
     vec4 terrain;
     vec4 forces;
     vec4 windDir_stretch;
     vec4 limits;
+    vec4 interaction;
+    vec4 time_data;
 };
 
 #define numParticles (int(params1.y))

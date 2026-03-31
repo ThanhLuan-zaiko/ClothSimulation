@@ -1,0 +1,142 @@
+#version 460 core
+#extension GL_ARB_compute_shader : require
+#extension GL_ARB_shader_storage_buffer_object : require
+
+layout(local_size_x = 256) in;
+
+#include "physics_common.glsl"
+
+// ============================================================================
+// CONFIGURATION
+// ============================================================================
+
+const float MAX_STRAIN_RATE = 0.05;
+const float STRAIN_LIMITING_STIFFNESS = 0.8;
+const float VELOCITY_DAMPING = 0.995;
+
+// ============================================================================
+// ATOMIC OPERATIONS
+// ============================================================================
+
+void atomicAddVec3(uint baseIdx, vec3 delta) {
+    const float scale = 10000.0;
+    atomicAdd(deltaPositions[baseIdx * 3 + 0], int(delta.x * scale));
+    atomicAdd(deltaPositions[baseIdx * 3 + 1], int(delta.y * scale));
+    atomicAdd(deltaPositions[baseIdx * 3 + 2], int(delta.z * scale));
+}
+
+// ============================================================================
+// STRAIN CALCULATION
+// ============================================================================
+
+float calculateGreenLagrangeStrain(float inRestLength, float inCurrentLength)
+{
+    if (inRestLength < EPSILON) return 0.0;
+    float lambda = inCurrentLength / inRestLength;
+    return 0.5 * (lambda * lambda - 1.0);
+}
+
+float calculateStrainRate(float inPrevLength, float inCurrentLength, float inDt) {
+    if (inPrevLength < EPSILON || inDt < EPSILON) return 0.0;
+    float strain = (inCurrentLength - inPrevLength) / inPrevLength;
+    return strain / inDt;
+}
+
+// ============================================================================
+// STRAIN LIMITING
+// ============================================================================
+
+void applyStrainLimiting(uint idx) {
+    ConstraintDataType c = constraints[idx];
+
+    int p1 = c.indices.x;
+    int p2 = c.indices.y;
+    float cRestLength = c.params.x;
+    float constraintType = c.padding.x;
+
+    if (pinnedFlags[p1] >= 0.5 && pinnedFlags[p2] >= 0.5) return;
+
+    vec3 pos1 = positions[p1].xyz;
+    vec3 pos2 = positions[p2].xyz;
+    vec3 prevPos1 = prevPositions[p1].xyz;
+    vec3 prevPos2 = prevPositions[p2].xyz;
+
+    vec3 delta = pos2 - pos1;
+    float currentLength = length(delta);
+
+    if (currentLength < EPSILON) return;
+
+    vec3 prevDelta = prevPos2 - prevPos1;
+    float prevLength = length(prevDelta);
+
+    float strain = calculateGreenLagrangeStrain(cRestLength, currentLength);
+    float strainRate = calculateStrainRate(prevLength, currentLength, deltaTime);
+    
+    float maxStrain = MAX_STRAIN_RATE;
+    float maxStrainRate = MAX_STRAIN_RATE * 2.0;
+    
+    if (constraintType == 0.0) {
+        maxStrain = MAX_STRAIN_RATE * 0.5;
+        maxStrainRate = MAX_STRAIN_RATE;
+    }
+    
+    bool needsLimiting = false;
+    float targetLength = currentLength;
+
+    if (strain > maxStrain) {
+        targetLength = cRestLength * (1.0 + maxStrain);
+        needsLimiting = true;
+    } else if (strain < -maxStrain) {
+        targetLength = cRestLength * (1.0 - maxStrain);
+        needsLimiting = true;
+    }
+    
+    if (abs(strainRate) > maxStrainRate) {
+        float rateCorrection = sign(strainRate) * maxStrainRate * deltaTime;
+        targetLength = prevLength + rateCorrection;
+        needsLimiting = true;
+    }
+    
+    if (!needsLimiting) return;
+    
+    float correction = (targetLength - currentLength) / currentLength;
+    correction *= STRAIN_LIMITING_STIFFNESS;
+    
+    vec3 correctionVec = delta * correction * 0.5;
+    
+    if (pinnedFlags[p1] < 0.5) {
+        atomicAddVec3(p1, correctionVec);
+    }
+    if (pinnedFlags[p2] < 0.5) {
+        atomicAddVec3(p2, -correctionVec);
+    }
+    
+    // Velocity damping
+    vec3 vel1 = pos1 - prevPos1;
+    vec3 vel2 = pos2 - prevPos2;
+    
+    vec3 constraintDir = delta / currentLength;
+    float vel1Proj = dot(vel1, constraintDir);
+    float vel2Proj = dot(vel2, constraintDir);
+    
+    float relVel = vel1Proj - vel2Proj;
+    float dampingCorrection = relVel * (1.0 - VELOCITY_DAMPING) * 0.5;
+    
+    if (pinnedFlags[p1] < 0.5) {
+        prevPositions[p1].xyz -= constraintDir * dampingCorrection;
+    }
+    if (pinnedFlags[p2] < 0.5) {
+        prevPositions[p2].xyz += constraintDir * dampingCorrection;
+    }
+}
+
+// ============================================================================
+// MAIN
+// ============================================================================
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= uint(numConstraints)) return;
+    
+    applyStrainLimiting(idx);
+}

@@ -6,6 +6,7 @@
 #include "renderer/Camera.h"
 #include "renderer/Shader.h"
 #include "renderer/ReflectionCubemap.h"
+#include "renderer/SSAOBuffer.h"
 #include "physics/GPUPhysicsWorld.h"
 #include "cloth/Cloth.h"
 #include "cloth/ClothMesh.h"
@@ -62,6 +63,13 @@ struct AppState {
     // Reflection
     ReflectionCubemap* reflectionCubemap = nullptr;  // Use pointer - initialized in InitializeGL()
     bool reflectionNeedsUpdate = true;
+
+    // SSAO
+    SSAOBuffer* ssaoBuffer = nullptr;
+    Shader ssaoShader;
+    Shader ssaoBlurShader;
+    Shader depthNormalShader;
+    bool useSSAO = true;
 
     // Lazy update tracking
     glm::vec3 lastReflectionUpdatePos;  // Last camera position when reflection was updated
@@ -210,9 +218,9 @@ struct AppState {
         // INTER-CLOTH COLLISION SETTINGS (More robust)
         config.selfCollisionRadius = 0.35f;   // Increased cushion (35cm)
         config.selfCollisionStrength = 2.0f;  // Stronger repulsion
-        
-        // STABILITY SETTINGS
-        config.gravityScale = 3.0f;           // Slightly reduced for better stability
+
+        // STABILITY SETTINGS - FIXED: gravityScale was 3.0f causing too fast fall
+        config.gravityScale = 1.0f;           // Normal gravity (was causing tunneling)
         config.airResistance = 0.990f;        // Slightly more resistance to prevent over-acceleration
         
         // CRITICAL: Set quality level BEFORE Initialize() so shader compiles with correct iterations
@@ -229,6 +237,12 @@ struct AppState {
 
     // Destructor - clean up dynamically allocated resources
     ~AppState() {
+        // Clean up SSAO
+        if (ssaoBuffer) {
+            delete ssaoBuffer;
+            ssaoBuffer = nullptr;
+        }
+
         // Clean up reflection cubemap
         if (reflectionCubemap) {
             delete reflectionCubemap;

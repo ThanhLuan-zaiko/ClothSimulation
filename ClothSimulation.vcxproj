@@ -172,6 +172,7 @@
     <ClCompile Include="src\world\WorldObject.cpp" />
     <ClCompile Include="src\world\Sphere.cpp" />
     <ClCompile Include="src\renderer\ReflectionCubemap.cpp" />
+    <ClCompile Include="src\renderer\SSAOBuffer.cpp" />
     <ClCompile Include="src\utils\GPUBenchmark.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -206,6 +207,7 @@
     <ClInclude Include="src\world\World.h" />
     <ClInclude Include="src\world\Sphere.h" />
     <ClInclude Include="src\renderer\ReflectionCubemap.h" />
+    <ClInclude Include="src\renderer\SSAOBuffer.h" />
   </ItemGroup>
 
   <!-- Shaders for Solution Explorer display -->
@@ -230,6 +232,15 @@
     <None Include="shaders\physics\modular\physics_radix_sort_hist.comp" />
     <None Include="shaders\physics\modular\physics_radix_sort_scan.comp" />
     <None Include="shaders\physics\modular\physics_radix_sort_scatter.comp" />
+    <None Include="shaders\physics\modular\physics_bend.comp" />
+    <None Include="shaders\physics\modular\physics_apply_deltas.comp" />
+    <None Include="shaders\physics\modular\physics_strain_limit.comp" />
+    <None Include="shaders\physics\modular\physics_spatial_hash.comp" />
+    <None Include="shaders\physics\modular\physics_ccd_solve.comp" />
+    <None Include="shaders\postprocess\depth_normal.vert" />
+    <None Include="shaders\postprocess\depth_normal.frag" />
+    <None Include="shaders\postprocess\ssao.comp" />
+    <None Include="shaders\postprocess\ssao_blur.comp" />
   </ItemGroup>
 
   <!-- Copy shaders to output directory -->
@@ -239,6 +250,7 @@
     <MakeDir Directories="$(OutDir)shaders\basic" />
     <MakeDir Directories="$(OutDir)shaders\sphere" />
     <MakeDir Directories="$(OutDir)shaders\physics\modular" />
+    <MakeDir Directories="$(OutDir)shaders\postprocess" />
     <Copy SourceFiles="$(ProjectDir)shaders\terrain\terrain.vert" DestinationFiles="$(OutDir)shaders\terrain\terrain.vert" />
     <Copy SourceFiles="$(ProjectDir)shaders\terrain\terrain.frag" DestinationFiles="$(OutDir)shaders\terrain\terrain.frag" />
     <Copy SourceFiles="$(ProjectDir)shaders\terrain\terrain_test.frag" DestinationFiles="$(OutDir)shaders\terrain\terrain_test.frag" />
@@ -259,6 +271,15 @@
     <Copy SourceFiles="$(ProjectDir)shaders\physics\modular\physics_radix_sort_hist.comp" DestinationFiles="$(OutDir)shaders\physics\modular\physics_radix_sort_hist.comp" />
     <Copy SourceFiles="$(ProjectDir)shaders\physics\modular\physics_radix_sort_scan.comp" DestinationFiles="$(OutDir)shaders\physics\modular\physics_radix_sort_scan.comp" />
     <Copy SourceFiles="$(ProjectDir)shaders\physics\modular\physics_radix_sort_scatter.comp" DestinationFiles="$(OutDir)shaders\physics\modular\physics_radix_sort_scatter.comp" />
+    <Copy SourceFiles="$(ProjectDir)shaders\physics\modular\physics_bend.comp" DestinationFiles="$(OutDir)shaders\physics\modular\physics_bend.comp" />
+    <Copy SourceFiles="$(ProjectDir)shaders\physics\modular\physics_apply_deltas.comp" DestinationFiles="$(OutDir)shaders\physics\modular\physics_apply_deltas.comp" />
+    <Copy SourceFiles="$(ProjectDir)shaders\physics\modular\physics_strain_limit.comp" DestinationFiles="$(OutDir)shaders\physics\modular\physics_strain_limit.comp" />
+    <Copy SourceFiles="$(ProjectDir)shaders\physics\modular\physics_spatial_hash.comp" DestinationFiles="$(OutDir)shaders\physics\modular\physics_spatial_hash.comp" />
+    <Copy SourceFiles="$(ProjectDir)shaders\physics\modular\physics_ccd_solve.comp" DestinationFiles="$(OutDir)shaders\physics\modular\physics_ccd_solve.comp" />
+    <Copy SourceFiles="$(ProjectDir)shaders\postprocess\depth_normal.vert" DestinationFiles="$(OutDir)shaders\postprocess\depth_normal.vert" />
+    <Copy SourceFiles="$(ProjectDir)shaders\postprocess\depth_normal.frag" DestinationFiles="$(OutDir)shaders\postprocess\depth_normal.frag" />
+    <Copy SourceFiles="$(ProjectDir)shaders\postprocess\ssao.comp" DestinationFiles="$(OutDir)shaders\postprocess\ssao.comp" />
+    <Copy SourceFiles="$(ProjectDir)shaders\postprocess\ssao_blur.comp" DestinationFiles="$(OutDir)shaders\postprocess\ssao_blur.comp" />
   </Target>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

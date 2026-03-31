@@ -1,0 +1,22 @@
+#version 460 core
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(r32f, binding = 0) uniform readonly image2D img_Input;
+layout(r32f, binding = 1) uniform writeonly image2D img_Output;
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(img_Input);
+    if (pixel.x >= size.x || pixel.y >= size.y) return;
+
+    float result = 0.0;
+    for (int x = -2; x < 2; ++x) {
+        for (int y = -2; y < 2; ++y) {
+            ivec2 offset = ivec2(x, y);
+            result += imageLoad(img_Input, pixel + offset).r;
+        }
+    }
+
+    imageStore(img_Output, pixel, vec4(result / 16.0));
+}

@@ -2,12 +2,24 @@
 #define USE_TEXTURE_GATHER 0
 #define MAX_ITERATIONS_RUNTIME 8
 
-// Work group size for compute shaders
-layout(local_size_x = 256) in;
-
 // ============================================================================
-// SHADER STORAGE BUFFER OBJECTS (SSBO)
+// SHADER STORAGE BUFFER OBJECTS (SSBO) - OPTIMIZED BINDINGS (max 16)
 // ============================================================================
+// Binding layout:
+//   0  - Positions (vec4)
+//   1  - PrevPositions (vec4)
+//   2  - Constraints (ConstraintDataType)
+//   3  - BendingConstraints (BendingConstraintDataType)
+//   4  - DeltaPositions (int) - atomic accumulation
+//   5  - PinnedFlags (float)
+//   6  - ParticleData (uint) - colors + adjacency combined
+//   7  - ConstraintIndices (int)
+//   8  - GridHead (uint)
+//   9  - GridNext (uint)
+//   10 - SortedIndices (uint)
+//   11 - SortTemp (uint)
+//   12 - CollisionPairs (uvec2)
+//   13 - Velocities (vec4) - optional
 
 // Particle positions (w = cloth ID for debugging)
 layout(std430, binding = 0) buffer PositionBufferSSBO {
@@ -15,82 +27,130 @@ layout(std430, binding = 0) buffer PositionBufferSSBO {
 };
 
 // Previous positions for Verlet integration
-layout(std430, binding = 5) buffer PrevPositionBufferSSBO {
+layout(std430, binding = 1) buffer PrevPositionBufferSSBO {
     vec4 prevPositions[];
 };
 
-// Particle velocities (currently unused in Verlet, but available for debugging)
-layout(std430, binding = 6) buffer VelocityBufferSSBO {
+// Particle velocities
+layout(std430, binding = 13) buffer VelocityBufferSSBO {
     vec4 velocities[];
 };
 
-// Constraint data: connects pairs of particles
+// Constraint data
 struct ConstraintDataType {
     ivec4 indices;  // xy = p1, p2 particle indices
     vec2 params;    // x = restLength, y = stiffness
     vec2 padding;
 };
 
-layout(std430, binding = 1) buffer ConstraintBufferSSBO {
+layout(std430, binding = 2) buffer ConstraintBufferSSBO {
     ConstraintDataType constraints[];
 };
 
-// Pinned flags: particles with flag >= 0.5 are fixed in place
-layout(std430, binding = 4) buffer PinnedFlagsSSBO {
+// Dihedral bending constraint data
+struct BendingConstraintDataType {
+    ivec4 indices;  // p1, p2 (edge), p3, p4 (opposite vertices)
+    vec2 params;    // x = restAngle, y = stiffness
+    vec2 padding;   // x = anisotropic factor
+};
+
+layout(std430, binding = 3) buffer BendingConstraintBufferSSBO {
+    BendingConstraintDataType bendConstraints[];
+};
+
+// Buffer for atomic accumulation (Fixed-point 10000.0 scale)
+layout(std430, binding = 4) buffer DeltaPositionBufferSSBO {
+    int deltaPositions[]; // x, y, z interleaved
+};
+
+// Pinned flags
+layout(std430, binding = 5) buffer PinnedFlagsSSBO {
     float pinnedFlags[];
 };
 
-// Particle constraint adjacency list (for graph coloring)
-layout(std430, binding = 9) buffer ConstraintAdjacencySSBO {
-    ivec2 particleConstraints[];
-};
-
-// Particle colors for graph coloring (parallel constraint solving)
-layout(std430, binding = 7) buffer ParticleColorsSSBO {
-    uint particleColors[];
+// Combined buffer: colors + adjacency
+layout(std430, binding = 6) buffer ParticleDataSSBO {
+    uint particleData[];
 };
 
 // Constraint indices for adjacency list
-layout(std430, binding = 10) buffer ConstraintIndicesSSBO {
+layout(std430, binding = 7) buffer ConstraintIndicesSSBO {
     int constraintIndices[];
 };
 
-// Spatial hash grid head (first particle index in each cell)
-layout(std430, binding = 11) buffer GridBufferSSBO {
+// Spatial hash grid head
+layout(std430, binding = 8) buffer GridBufferSSBO {
     uint gridHead[];
 };
 
-// Spatial hash grid next (linked list pointer)
-layout(std430, binding = 12) buffer NextBufferSSBO {
+// Spatial hash grid next
+layout(std430, binding = 9) buffer NextBufferSSBO {
     uint gridNext[];
+};
+
+// Sorted indices for radix sort
+layout(std430, binding = 10) buffer SortedIndicesSSBO {
+    uint sortedIndices[];
+};
+
+// Temp buffer for radix sort
+layout(std430, binding = 11) buffer SortTempSSBO {
+    uint sortTemp[];
+};
+
+// Collision pairs
+layout(std430, binding = 12) buffer CollisionPairsSSBO {
+    uvec2 collisionPairs[];
 };
 
 // ============================================================================
 // CONSTANTS
 // ============================================================================
 
-const uint GRID_SIZE = 32768u;       // Must match GPUPhysicsWorld.cpp
+const uint GRID_SIZE = 32768u;
 const uint GRID_MASK = GRID_SIZE - 1u;
-const float CELL_SIZE = 1.05f;       // Slightly larger than selfCollisionRadius
-const float EPSILON = 0.0001f;       // Small value for floating point comparisons
-const int MAX_ITERATIONS = MAX_ITERATIONS_RUNTIME;  // Max constraint iterations
+const float CELL_SIZE = 1.05f;
+const float EPSILON = 0.0001f;
+const int MAX_ITERATIONS = MAX_ITERATIONS_RUNTIME;
+const int MAX_COLORS = 16;
 
 // ============================================================================
 // UNIFORM BUFFER OBJECTS (UBO)
 // ============================================================================
 
-layout(std140, binding = 2) uniform PhysicsParams {
-    vec4 gravity_dt;        // xyz = gravity, w = deltaTime
-    vec4 params1;           // x = damping, y = numParticles, z = numConstraints, w = restLength
-    vec4 terrain;           // xy = terrainSize, z = terrainHeightScale, w = gravityScale
-    vec4 forces;            // x = airResistance, y = windStrength, zw = padding
-    vec4 windDir_stretch;   // xyz = windDirection, w = stretchResistance
-    vec4 limits;            // x = maxVelocity, y = selfCollisionRadius, z = selfCollisionStrength, w = padding
-    vec4 interaction;       // xyz = interactionPos, w = interactionActive (0 or 1)
-    vec4 time_data;         // x = u_Time, yzw = padding
+layout(std140, binding = 0) uniform PhysicsParams {
+    vec4 gravity_dt;
+    vec4 params1;
+    vec4 terrain;
+    vec4 forces;
+    vec4 windDir_stretch;
+    vec4 limits;
+    vec4 interaction;
+    vec4 time_data;
 };
 
-// Macros for cleaner code
+layout(std140, binding = 1) uniform CollisionParams {
+    vec3 sphereCenter;
+    float sphereRadius;
+    float groundLevel;
+    float collisionMargin;
+    float dampingFactor;
+    float frictionFactor;
+    int collisionSubsteps;
+    float sphereStaticFriction;
+    float sphereDynamicFriction;
+    float sphereBounce;
+    float sphereGripFactor;
+    float staticFrictionThreshold;
+    float sleepingThreshold;
+    float sphereWrapFactor;
+    float terrainDamping;
+    float ccdSubsteps;
+    float conservativeFactor;
+    float maxPenetrationCorrection;
+};
+
+// Macros
 #define gravity (gravity_dt.xyz)
 #define deltaTime (gravity_dt.w)
 #define damping (params1.x)
@@ -112,26 +172,21 @@ layout(std140, binding = 2) uniform PhysicsParams {
 #define u_Time (time_data.x)
 
 // ============================================================================
-// SHARED MEMORY
-// ============================================================================
-
-shared vec3 sharedPositions[256];
-
-// ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
 
-/// @brief Converts a float to a sortable uint
 uint floatToUint(float f) {
     uint u = floatBitsToUint(f);
     uint mask = (u & 0x80000000u) != 0u ? 0xFFFFFFFFu : 0x80000000u;
     return u ^ mask;
 }
 
-/// @brief Hash function for spatial hashing
-/// @param p World position
-/// @return Grid cell index
 uint hashPos(vec3 p) {
     ivec3 cell = ivec3(floor(p / CELL_SIZE));
     return (uint(cell.x) * 73856093u ^ uint(cell.y) * 19349663u ^ uint(cell.z) * 83492791u) & GRID_MASK;
+}
+
+// Get particle color
+uint getParticleColor(uint idx) {
+    return particleData[idx];
 }

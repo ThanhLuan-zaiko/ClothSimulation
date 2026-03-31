@@ -1,5 +1,5 @@
-#include "SceneRenderer.h"
 #include <glad/glad.h>
+#include "SceneRenderer.h"
 #include <stb_image.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <iostream>
@@ -49,6 +49,56 @@ void Render(AppState& state, const Application& app) {
     glm::mat4 model = glm::mat4(1.0f);
     glm::mat4 view = state.camera.GetViewMatrix();
     glm::mat4 projection = state.camera.GetProjectionMatrix();
+
+    // === SSAO PASS 1: GEOMETRY (DEPTH & NORMALS) ===
+    if (state.useSSAO && state.ssaoBuffer) {
+        state.ssaoBuffer->BindGeometryPass();
+        
+        state.depthNormalShader.Bind();
+        state.depthNormalShader.SetMat4("u_View", view);
+        state.depthNormalShader.SetMat4("u_Projection", projection);
+
+        // Draw terrain into SSAO buffer
+        state.depthNormalShader.SetMat4("u_Model", model);
+        state.world.GetTerrain().Draw(state.depthNormalShader);
+
+        // Draw sphere into SSAO buffer
+        glm::mat4 sphereModel = glm::translate(glm::mat4(1.0f), state.mirrorSphere.GetPosition());
+        state.depthNormalShader.SetMat4("u_Model", sphereModel);
+        state.mirrorSphere.Draw();
+
+        // Draw cloths into SSAO buffer
+        for (auto* mesh : state.clothMeshes) {
+            state.depthNormalShader.SetMat4("u_Model", model);
+            mesh->Draw(state.depthNormalShader);
+        }
+        
+        state.depthNormalShader.Unbind();
+        state.ssaoBuffer->Unbind();
+
+        // === SSAO PASS 2: COMPUTE OCCLUSION ===
+        state.ssaoShader.Bind();
+        glBindImageTexture(0, state.ssaoBuffer->GetNormalTexture(), 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32F);
+        glBindImageTexture(1, state.ssaoBuffer->GetDepthTexture(), 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32F);
+        glBindImageTexture(2, state.ssaoBuffer->GetSSAOTexture(), 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32F);
+        
+        state.ssaoShader.SetMat4("u_Projection", projection);
+        for (int i = 0; i < 64; ++i) {
+            state.ssaoShader.SetVec3("u_Samples[" + std::to_string(i) + "]", state.ssaoBuffer->GetSamples()[i]);
+        }
+        
+        int width, height;
+        app.GetWindowSize(&width, &height);
+        glDispatchCompute((width + 15) / 16, (height + 15) / 16, 1);
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+
+        // === SSAO PASS 3: BLUR ===
+        state.ssaoBlurShader.Bind();
+        glBindImageTexture(0, state.ssaoBuffer->GetSSAOTexture(), 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32F);
+        glBindImageTexture(1, state.ssaoBuffer->GetBlurredTexture(), 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32F);
+        glDispatchCompute((width + 15) / 16, (height + 15) / 16, 1);
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+    }
 
     // === MAIN PASS RENDER ===
     // Ensure correct state
@@ -262,6 +312,20 @@ void Render(AppState& state, const Application& app) {
         state.clothShader.SetInt("u_Wireframe", 0);
         state.clothShader.SetInt("u_Interactive", state.isInteracting ? 1 : 0);
         state.clothShader.SetVec3("u_Color", glm::vec3(1.0f, 1.0f, 1.0f));
+
+        // Bind SSAO texture if enabled
+        if (state.useSSAO && state.ssaoBuffer) {
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, state.ssaoBuffer->GetBlurredTexture());
+            state.clothShader.SetInt("u_SSAOTexture", 1);
+            state.clothShader.SetInt("u_UseSSAO", 1);
+            
+            int width, height;
+            app.GetWindowSize(&width, &height);
+            state.clothShader.SetVec2("u_ScreenSize", glm::vec2((float)width, (float)height));
+        } else {
+            state.clothShader.SetInt("u_UseSSAO", 0);
+        }
 
         // Ensure correct render states BEFORE rendering cloths
         glEnable(GL_DEPTH_TEST);

@@ -4,28 +4,23 @@
 #extension GL_KHR_shader_subgroup_basic : require
 #extension GL_KHR_shader_subgroup_arithmetic : require
 
+layout(local_size_x = 256) in;
+
 #include "physics_common.glsl"
 
-layout(std140, binding = 8) uniform CollisionParams {
-    vec3 sphereCenter;
-    float padding1;
-    float sphereRadius;
-    float groundLevel;
-    float collisionMargin;
-    float dampingFactor;
-    float frictionFactor;
-    int collisionSubsteps;
-    float sphereStaticFriction;
-    float sphereDynamicFriction;
-    float sphereBounce;
-    float sphereGripFactor;
-    float staticFrictionThreshold;
-    float sleepingThreshold;        // NEW: Velocity threshold for sleeping
-    float sphereWrapFactor;         // NEW: How much cloth wraps around sphere (0-1)
-    float terrainDamping;           // NEW: Extra damping on terrain contact
-};
-
 uniform sampler2D terrainHeightmap;
+
+// ============================================================================
+// HARD-CODED COLLISION PARAMETERS (DEBUG - force large margins)
+// ============================================================================
+
+const float SPHERE_MARGIN = 2.5f;     // VERY LARGE - catch particles 2.5m before sphere
+const float TERRAIN_MARGIN = 1.0f;    // LARGE - catch particles 1m before terrain
+const float VELOCITY_DAMPING = 0.08f; // Heavy damping on collision (92% loss)
+
+// ============================================================================
+// TERRAIN FUNCTIONS
+// ============================================================================
 
 float getTerrainHeight(float x, float z) {
     if (terrainSize.x <= 0.0f || terrainSize.y <= 0.0f) return groundLevel;
@@ -45,6 +40,113 @@ vec3 getTerrainNormal(float x, float z) {
     return normalize(vec3(hL - hR, 2.0 * step, hD - hU));
 }
 
+// ============================================================================
+// SPHERE COLLISION - EARLY DETECTION WITH LARGE MARGIN
+// ============================================================================
+
+bool sphereCollision(inout vec3 pos, inout vec3 prevPos) {
+    float sphereRadiusWithMargin = sphereRadius + SPHERE_MARGIN;
+    float minDistSq = sphereRadiusWithMargin * sphereRadiusWithMargin;
+    
+    vec3 toSphere = pos - sphereCenter;
+    float distSq = dot(toSphere, toSphere);
+    vec3 vel = pos - prevPos;
+    
+    // Check if particle will collide this frame
+    if (distSq < minDistSq) {
+        float dist = sqrt(distSq);
+        vec3 normal = (dist > EPSILON) ? (toSphere / dist) : vec3(0.0, 1.0, 0.0);
+        
+        // Push to surface (with margin)
+        vec3 surfacePos = sphereCenter + normal * sphereRadiusWithMargin;
+        pos = surfacePos;
+        
+        // HEAVY damping - kill most velocity
+        vec3 tangentVel = vel * VELOCITY_DAMPING;
+        prevPos = surfacePos - tangentVel;
+        
+        return true;
+    }
+    
+    // Ray-sphere intersection for CCD
+    vec3 toSpherePrev = prevPos - sphereCenter;
+    float a = dot(vel, vel);
+    if (a < EPSILON) return false;
+    
+    float b = 2.0 * dot(toSpherePrev, vel);
+    float c = dot(toSpherePrev, toSpherePrev) - minDistSq;
+    
+    float discriminant = b * b - 4.0 * a * c;
+    if (discriminant < 0.0) return false;
+    
+    float sqrtDisc = sqrt(discriminant);
+    float t = (-b - sqrtDisc) / (2.0 * a);
+    
+    if (t >= 0.0 && t <= 1.0) {
+        // Collision will happen at time t
+        vec3 impactPos = prevPos + vel * t;
+        vec3 normal = normalize(impactPos - sphereCenter);
+        vec3 surfacePos = sphereCenter + normal * sphereRadiusWithMargin;
+
+        // Move to surface and damp velocity
+        float remainingTime = 1.0 - t;
+        vec3 tangentVel = vel * remainingTime * 0.15f;
+
+        pos = surfacePos + tangentVel;
+        prevPos = surfacePos - tangentVel * 0.5f;
+
+        return true;
+    }
+    
+    return false;
+}
+
+// ============================================================================
+// TERRAIN COLLISION - EARLY DETECTION
+// ============================================================================
+
+bool terrainCollision(inout vec3 pos, inout vec3 prevPos) {
+    vec3 vel = pos - prevPos;
+    
+    // Check current position
+    float curTerrainH = getTerrainHeight(pos.x, pos.z);
+    float minTerrainY = curTerrainH + TERRAIN_MARGIN;
+    
+    if (pos.y < minTerrainY) {
+        vec3 normal = getTerrainNormal(pos.x, pos.z);
+        pos.y = minTerrainY;
+        
+        // Heavy damping
+        vec3 tangentVel = vel * VELOCITY_DAMPING;
+        prevPos = pos - tangentVel;
+        
+        return true;
+    }
+    
+    // Simple CCD - check midpoint
+    vec3 midPos = prevPos + vel * 0.5f;
+    float midTerrainH = getTerrainHeight(midPos.x, midPos.z);
+    float midMinY = midTerrainH + TERRAIN_MARGIN;
+    
+    if (midPos.y < midMinY) {
+        vec3 normal = getTerrainNormal(midPos.x, midPos.z);
+        midPos.y = midMinY;
+        
+        // Dampen velocity heavily
+        vec3 tangentVel = vel * 0.1f;
+        pos = midPos + tangentVel * 0.5f;
+        prevPos = midPos - tangentVel * 0.5f;
+        
+        return true;
+    }
+    
+    return false;
+}
+
+// ============================================================================
+// MAIN
+// ============================================================================
+
 void main() {
     uint globalIdx = gl_GlobalInvocationID.x;
     if (globalIdx >= uint(numParticles)) return;
@@ -52,93 +154,50 @@ void main() {
 
     vec3 pos = positions[globalIdx].xyz;
     vec3 prevPos = prevPositions[globalIdx].xyz;
-    vec3 vel = pos - prevPos;
-    float velLen = length(vel);
-
-    // DEBUG STATE: Default to 0.0
     float debugState = 0.0f;
 
-    // ============================================================
-    // SPHERE COLLISION - Aggressive Draping
-    // ============================================================
-    vec3 toSphere = pos - sphereCenter;
-    float dist = length(toSphere);
-    float minDist = sphereRadius + collisionMargin;
-
-    if (dist < minDist + 0.1f && dist > EPSILON) {
-        vec3 normal = toSphere / dist;
-        vec3 surfacePos = sphereCenter + normal * minDist;
-        float contactAngle = dot(normal, vec3(0.0, 1.0, 0.0));
-        
-        // HUGGING FORCE: Stronger suction to keep cloth on surface
-        if (dist > minDist) {
-            float suction = 0.4f * sphereWrapFactor * smoothstep(minDist + 0.1f, minDist, dist);
-            pos = mix(pos, surfacePos, suction);
-        }
-
-        if (dist < minDist) {
-            float vNormal = dot(vel, normal);
-            vec3 vTangent = vel - vNormal * normal;
-            float tangentSpeed = length(vTangent);
-            
-            // EXTREME STICK: Much more aggressive thresholds
-            float wrapThreshold = 0.2f - (sphereWrapFactor * 0.8f); 
-            bool inStickZone = (contactAngle > wrapThreshold);
-            
-            // Massive threshold boost: make it very hard to break the stick
-            float stickiness = smoothstep(wrapThreshold, 1.0f, contactAngle);
-            float stickThreshold = staticFrictionThreshold * (20.0f + sphereGripFactor * 50.0f + stickiness * 100.0f);
-            
-            // If at the very top (Red zone), we force a stop for at least a few moments
-            if (inStickZone && (tangentSpeed < stickThreshold || contactAngle > 0.8f)) {
-                pos = surfacePos;
-                // Hard Lock: No velocity, and counteract gravity
-                prevPos = pos + (gravity * deltaTime * deltaTime) / max(damping, 0.01f);
-                debugState = 1.0f; 
-            } else {
-                // Friction while sliding is also much higher now
-                float friction = 0.80f + (0.19f * sphereWrapFactor);
-                vTangent *= friction;
-                vNormal = 0.0;
-                pos = surfacePos;
-                prevPos = pos - vTangent;
-            }
+    // Phase 1: Sphere collision (check FIRST - sphere is above terrain)
+    if (sphereRadius > 0.0) {
+        if (sphereCollision(pos, prevPos)) {
+            debugState = 1.0f;
         }
     }
 
-    // ============================================================
-    // TERRAIN COLLISION - Iron Plate Stability
-    // ============================================================
-    float terrainH = getTerrainHeight(pos.x, pos.z);
-    float totalMargin = collisionMargin + 0.005f;
+    // Phase 2: Terrain collision
+    if (terrainCollision(pos, prevPos)) {
+        if (debugState == 0.0f) debugState = 2.0f;
+    }
 
-    if (pos.y < terrainH + totalMargin) {
-        vec3 normal = getTerrainNormal(pos.x, pos.z);
-        vec3 correctedPos = vec3(pos.x, terrainH + totalMargin, pos.z);
-        vec3 curVel = pos - prevPos;
-        float curVelLen = length(curVel);
+    // Phase 3: Ground fallback (lowest level)
+    if (pos.y < groundLevel + 0.5f) {
+        pos.y = groundLevel + 0.5f;
+        vec3 vel = pos - prevPos;
+        prevPos = pos - vel * 0.1f;
+        if (debugState == 0.0f) debugState = 3.0f;
+    }
 
-        // EXTREME sleep threshold to ensure ~90% coverage
-        float sleepThresh = max(sleepingThreshold * 6.0f, 0.6f);
+    // Phase 4: Velocity clamping (PREVENT EXPLOSION)
+    vec3 curVel = pos - prevPos;
+    float curVelLen = length(curVel);
+    
+    // Lower max velocity
+    float maxVel = 8.0f * deltaTime;
+    if (curVelLen > maxVel) {
+        curVel = normalize(curVel) * maxVel;
+        pos = prevPos + curVel;
+    }
 
-        if (curVelLen < sleepThresh) {
-            // HARD SLEEP LOCK: Absolute zero movement
-            pos = correctedPos;
-            prevPos = pos + (gravity * deltaTime * deltaTime) / max(damping, 0.01f);
-            debugState = 2.0f; // BLUE
-        } else {
-            // Even when not sleeping, apply massive damping near ground
-            float damp = clamp(1.0f - terrainDamping * 5.0f, 0.0f, 0.3f);
-            float vNormal = dot(curVel, normal);
-            vec3 vTangent = curVel - vNormal * normal;
-            vTangent *= damp;
-            vNormal = 0.0;
-            pos = correctedPos;
-            prevPos = pos - vTangent;
-        }
+    // Phase 5: ABSOLUTE cap (very conservative)
+    vec3 finalVel = pos - prevPos;
+    float finalVelLen = length(finalVel);
+    float absoluteMaxVel = 6.0f * deltaTime;  // VERY LOW to prevent explosion
+    
+    if (finalVelLen > absoluteMaxVel) {
+        finalVel = normalize(finalVel) * absoluteMaxVel;
+        pos = prevPos + finalVel;
     }
 
     positions[globalIdx].xyz = pos;
-    positions[globalIdx].w = debugState; // Pass state to renderer
+    positions[globalIdx].w = debugState;
     prevPositions[globalIdx].xyz = prevPos;
 }

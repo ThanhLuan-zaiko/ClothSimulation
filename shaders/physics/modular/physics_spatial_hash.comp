@@ -1,0 +1,147 @@
+#version 460 core
+#extension GL_ARB_compute_shader : require
+#extension GL_ARB_shader_storage_buffer_object : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+
+layout(local_size_x = 256) in;
+
+#include "physics_common.glsl"
+
+// ============================================================================
+// SPATIAL HASH GRID CONFIGURATION (NEW - separate from physics_common)
+// ============================================================================
+
+const uint GRID_HASH_SIZE = 65536u;  // 2^16 hash buckets
+const uint GRID_MAX_PARTICLES_PER_CELL = 64;
+// Use CELL_SIZE from physics_common.glsl (1.05f)
+
+// ============================================================================
+// GRID DATA STRUCTURES (NEW bindings 14, 15)
+// ============================================================================
+
+// Grid header: stores start index and count for each cell
+layout(std430, binding = 14) buffer GridHeaderSSBO {
+    uvec2 gridCells[];  // .x = start index, .y = count
+};
+
+// Grid items: particle indices stored per cell
+layout(std430, binding = 15) buffer GridItemsSSBO {
+    uint gridItems[];  // Flattened array of particle indices
+};
+
+// Pair count atomic counter (use binding 11 which is SortTemp)
+layout(std430, binding = 11) buffer PairCountSSBO {
+    uint pairCount;
+};
+
+// ============================================================================
+// HASH FUNCTIONS
+// ============================================================================
+
+// 3D position to grid cell (using CELL_SIZE from common)
+ivec3 posToCell(vec3 pos) {
+    return ivec3(floor(pos / CELL_SIZE));
+}
+
+// Spatial hash function (from NVIDIA Flex)
+uint hashCell(ivec3 cell) {
+    uint h = uint(cell.x) * 73856093u ^ uint(cell.y) * 19349663u ^ uint(cell.z) * 83492791u;
+    return h & (GRID_HASH_SIZE - 1u);
+}
+
+// ============================================================================
+// BROADPHASE: BUILD SPATIAL HASH GRID
+// ============================================================================
+
+void buildSpatialHash() {
+    uint globalIdx = gl_GlobalInvocationID.x;
+    if (globalIdx >= uint(numParticles)) return;
+
+    vec3 pos = positions[globalIdx].xyz;
+    ivec3 cell = posToCell(pos);
+    uint hash = hashCell(cell);
+
+    // Atomic append to grid cell
+    uint cellStart = atomicAdd(gridCells[hash].y, 1u);
+
+    // Store in grid items (need to handle overflow)
+    if (cellStart < GRID_MAX_PARTICLES_PER_CELL) {
+        uint itemIdx = hash * GRID_MAX_PARTICLES_PER_CELL + cellStart;
+        gridItems[itemIdx] = globalIdx;
+    }
+}
+
+// ============================================================================
+// BROADPHASE: FIND COLLISION PAIRS
+// ============================================================================
+
+void findCollisionPairs() {
+    uint globalIdx = gl_GlobalInvocationID.x;
+    if (globalIdx >= uint(numParticles)) return;
+
+    vec3 myPos = positions[globalIdx].xyz;
+    ivec3 myCell = posToCell(myPos);
+    float myClothID = prevPositions[globalIdx].w;
+
+    // Check neighboring cells (3x3x3 = 27 cells)
+    for (int dx = -1; dx <= 1; dx++) {
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                ivec3 neighborCell = myCell + ivec3(dx, dy, dz);
+                uint hash = hashCell(neighborCell);
+
+                uvec2 cellData = gridCells[hash];
+                uint count = cellData.y;
+                uint start = cellData.x;
+
+                // Check all particles in this cell
+                for (uint i = 0; i < count && i < GRID_MAX_PARTICLES_PER_CELL; i++) {
+                    uint itemIdx = hash * GRID_MAX_PARTICLES_PER_CELL + i;
+                    uint otherIdx = gridItems[itemIdx];
+
+                    // Skip self and same-cloth neighbors
+                    if (otherIdx <= globalIdx) continue;
+
+                    float otherClothID = prevPositions[otherIdx].w;
+                    if (myClothID == otherClothID) {
+                        // Same cloth: skip close neighbors (already constrained)
+                        uint idxDiff = otherIdx - globalIdx;
+                        if (idxDiff < 4) continue;
+                    }
+
+                    // Broadphase culling: quick distance check
+                    vec3 otherPos = positions[otherIdx].xyz;
+                    vec3 delta = otherPos - myPos;
+
+                    // Use infinity norm for quick rejection
+                    float infDist = max(abs(delta.x), max(abs(delta.y), abs(delta.z)));
+                    if (infDist > selfCollisionRadius * 1.5f) continue;
+
+                    // Add collision pair
+                    uint pairIdx = atomicAdd(pairCount, 1u);
+                    if (pairIdx < 524288u) {
+                        collisionPairs[pairIdx] = uvec2(globalIdx, otherIdx);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// MAIN
+// ============================================================================
+
+void main() {
+    // Phase 1: Build spatial hash grid
+    buildSpatialHash();
+
+    memoryBarrierBuffer();
+    barrier();
+
+    // Phase 2: Find collision pairs
+    if (gl_GlobalInvocationID.x < uint(numParticles)) {
+        findCollisionPairs();
+    }
+}

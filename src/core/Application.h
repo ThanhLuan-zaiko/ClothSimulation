@@ -13,6 +13,7 @@ public:
     void Run();
     void Quit();
 
+    void GetWindowSize(int* width, int* height) const; // NEW
     Window& GetWindow() { return *m_Window; }
 
     // Set callbacks

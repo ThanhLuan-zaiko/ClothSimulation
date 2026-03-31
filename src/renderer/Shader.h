@@ -37,7 +37,8 @@ public:
 
     static Shader CreateFromFile(const std::string& vertexPath, const std::string& fragmentPath);
     static Shader CreateComputeShaderFromFile(const std::string& computePath);
-    static Shader CreateComputeShaderFromSource(const std::string& computeSource);  // NEW
+    static Shader CreateComputeShaderFromSource(const std::string& computeSource);
+    static std::string LoadShaderSource(const std::string& filepath); // NEW
 
 private:
     unsigned int m_RendererID;

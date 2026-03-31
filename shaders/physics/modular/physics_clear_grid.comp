@@ -1,5 +1,14 @@
 #version 460 core
+#extension GL_ARB_compute_shader : require
+#extension GL_ARB_shader_storage_buffer_object : require
+
 layout(local_size_x = 256) in;
+
+#include "physics_common.glsl"
+
 void main() {
-    // Spatial grid is currently unused but shader must be valid
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= GRID_SIZE) return;
+    
+    gridHead[idx] = 0xFFFFFFFFu;
 }

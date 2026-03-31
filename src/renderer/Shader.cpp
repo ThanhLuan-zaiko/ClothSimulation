@@ -123,6 +123,18 @@ Shader Shader::CreateComputeShaderFromSource(const std::string& computeSource) {
     return shader;
 }
 
+std::string Shader::LoadShaderSource(const std::string& filepath) {
+    std::ifstream file(filepath);
+    if (!file.is_open()) {
+        std::cerr << "Failed to open shader file: " << filepath << std::endl;
+        return "";
+    }
+
+    std::stringstream stream;
+    stream << file.rdbuf();
+    return stream.str();
+}
+
 unsigned int Shader::CompileShader(unsigned int type, const std::string& source) {
     unsigned int id = glCreateShader(type);
     const char* src = source.c_str();

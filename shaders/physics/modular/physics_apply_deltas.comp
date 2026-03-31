@@ -1,0 +1,26 @@
+#version 460 core
+#extension GL_ARB_compute_shader : require
+#extension GL_ARB_shader_storage_buffer_object : require
+
+layout(local_size_x = 256) in;
+
+#include "physics_common.glsl"
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= uint(numParticles)) return;
+
+    // Apply accumulated deltas (Fixed-point 10000.0 scale)
+    const float invScale = 1.0 / 10000.0;
+    
+    float dx = float(deltaPositions[idx * 3 + 0]) * invScale;
+    float dy = float(deltaPositions[idx * 3 + 1]) * invScale;
+    float dz = float(deltaPositions[idx * 3 + 2]) * invScale;
+    
+    positions[idx].xyz += vec3(dx, dy, dz);
+
+    // Reset delta for next iteration/frame
+    deltaPositions[idx * 3 + 0] = 0;
+    deltaPositions[idx * 3 + 1] = 0;
+    deltaPositions[idx * 3 + 2] = 0;
+}

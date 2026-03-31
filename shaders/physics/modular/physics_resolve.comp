@@ -4,25 +4,172 @@
 #extension GL_KHR_shader_subgroup_basic : require
 #extension GL_KHR_shader_subgroup_arithmetic : require
 
+layout(local_size_x = 256) in;
+
 #include "physics_common.glsl"
 
-layout(std430, binding = 14) buffer SortTempSSBO { uint sortTemp[]; };
-layout(std430, binding = 15) buffer CollisionPairsSSBO { uvec2 collisionPairs[]; };
+// CCD configuration
+const int CCD_NUM_SAMPLES = 4;
+const float CCD_EPSILON = 0.001;
+const float MAX_CORRECTION_FACTOR = 0.5;
 
-#define pairCount (sortTemp[numParticles + 8192])
+// ============================================================================
+// CCD FUNCTIONS
+// ============================================================================
 
-// NEW: Softening parameter to prevent harsh corrections
-const float SOFTENING = 0.02;
+bool ccdParticleCollision(
+    vec3 posA, vec3 prevPosA,
+    vec3 posB, vec3 prevPosB,
+    float radius,
+    out float outHitTime,
+    out vec3 outClosestA,
+    out vec3 outClosestB)
+{
+    outHitTime = 0.0;
+    outClosestA = posA;
+    outClosestB = posB;
+    
+    vec3 velA = posA - prevPosA;
+    vec3 velB = posB - prevPosB;
+    vec3 relVel = velA - velB;
+    vec3 relPosInit = prevPosA - prevPosB;
+    
+    float radiusSq = radius * radius;
+    float initDistSq = dot(relPosInit, relPosInit);
+    
+    if (initDistSq <= radiusSq) {
+        outHitTime = 0.0;
+        outClosestA = prevPosA;
+        outClosestB = prevPosB;
+        return true;
+    }
+    
+    float a = dot(relVel, relVel);
+    float b = 2.0 * dot(relPosInit, relVel);
+    float c = initDistSq - radiusSq;
+    
+    if (a < CCD_EPSILON * CCD_EPSILON) {
+        return false;
+    }
+    
+    float discriminant = b * b - 4.0 * a * c;
+    
+    if (discriminant < 0.0) {
+        float t = -b / (2.0 * a);
+        if (t < 0.0 || t > 1.0) return false;
+        
+        vec3 closestRelPos = relPosInit + t * relVel;
+        float closestDistSq = dot(closestRelPos, closestRelPos);
+        
+        if (closestDistSq < radiusSq) {
+            outHitTime = t;
+            outClosestA = prevPosA + velA * t;
+            outClosestB = prevPosB + velB * t;
+            return true;
+        }
+        return false;
+    }
+    
+    float sqrtDisc = sqrt(discriminant);
+    float t0 = (-b - sqrtDisc) / (2.0 * a);
+    float t1 = (-b + sqrtDisc) / (2.0 * a);
+    
+    float hitTime = 2.0;
+    if (t0 >= 0.0 && t0 <= 1.0) hitTime = t0;
+    else if (t1 >= 0.0 && t1 <= 1.0) hitTime = t1;
+    
+    if (hitTime > 1.0) {
+        vec3 finalRelPos = relPosInit + relVel;
+        if (dot(finalRelPos, finalRelPos) < radiusSq) {
+            hitTime = 1.0;
+        } else {
+            return false;
+        }
+    }
+    
+    outHitTime = hitTime;
+    outClosestA = prevPosA + velA * hitTime;
+    outClosestB = prevPosB + velB * hitTime;
+    
+    return true;
+}
+
+float multiSampleCCD(
+    vec3 posA, vec3 prevPosA,
+    vec3 posB, vec3 prevPosB,
+    out float outMinTime)
+{
+    outMinTime = 0.0;
+    float minDistSq = 1e10;
+    
+    vec3 velA = posA - prevPosA;
+    vec3 velB = posB - prevPosB;
+    
+    for (int i = 0; i <= CCD_NUM_SAMPLES; i++) {
+        float t = float(i) / float(CCD_NUM_SAMPLES);
+        vec3 sampleA = prevPosA + velA * t;
+        vec3 sampleB = prevPosB + velB * t;
+        vec3 delta = sampleA - sampleB;
+        float distSq = dot(delta, delta);
+        
+        if (distSq < minDistSq) {
+            minDistSq = distSq;
+            outMinTime = t;
+        }
+    }
+    
+    return sqrt(minDistSq);
+}
+
+// ============================================================================
+// COLLISION RESOLUTION
+// ============================================================================
+
+void resolveCollision(
+    uint idxA, uint idxB,
+    vec3 closestA, vec3 closestB,
+    float penetration, float hitTime,
+    float groundFactorA, float groundFactorB)
+{
+    if (penetration <= 0.0) return;
+    
+    vec3 delta = closestA - closestB;
+    float dist = length(delta);
+    if (dist < EPSILON) return;
+    
+    vec3 normal = delta / dist;
+    float settlingFactor = min(groundFactorA, groundFactorB);
+    float correctionFactor = mix(0.15f, 0.5f, settlingFactor);
+    correctionFactor = min(correctionFactor, MAX_CORRECTION_FACTOR);
+    
+    float softenedPenetration = penetration * correctionFactor;
+    vec3 correction = normal * softenedPenetration;
+    
+    atomicAdd(deltaPositions[idxA * 3 + 0], int(correction.x * 10000.0));
+    atomicAdd(deltaPositions[idxA * 3 + 1], int(correction.y * 10000.0));
+    atomicAdd(deltaPositions[idxA * 3 + 2], int(correction.z * 10000.0));
+    
+    atomicAdd(deltaPositions[idxB * 3 + 0], int(-correction.x * 10000.0));
+    atomicAdd(deltaPositions[idxB * 3 + 1], int(-correction.y * 10000.0));
+    atomicAdd(deltaPositions[idxB * 3 + 2], int(-correction.z * 10000.0));
+}
+
+// ============================================================================
+// MAIN
+// ============================================================================
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
+    // Use pairCount macro from sortTemp buffer
+    uint pairCount = sortTemp[numParticles + 8192];
+    
     if (idx >= pairCount) return;
 
     uvec2 pair = collisionPairs[idx];
     uint i = pair.x;
     uint j = pair.y;
 
-    // Skip immediate neighbors in mesh if same cloth to prevent jitter
+    // Skip immediate neighbors
     float clothID_A = prevPositions[i].w;
     float clothID_B = prevPositions[j].w;
     if (clothID_A == clothID_B) {
@@ -30,68 +177,43 @@ void main() {
         if (diff < 4) return;
     }
 
-    vec3 posA = positions[i].xyz;
-    vec3 posB = positions[j].xyz;
+    vec3 curPosA = positions[i].xyz;
+    vec3 curPosB = positions[j].xyz;
+    vec3 prevPosA = prevPositions[i].xyz;
+    vec3 prevPosB = prevPositions[j].xyz;
 
-    vec3 delta = posA - posB;
-    float distSq = dot(delta, delta);
-    float minDistSq = selfCollisionRadius * selfCollisionRadius;
-
-    if (distSq >= minDistSq || distSq < EPSILON * EPSILON) return;
-
-    float d = sqrt(distSq);
-    vec3 n = delta / d;
-    float penetration = selfCollisionRadius - d;
-
-    // STABILIZED PBD RESOLUTION: Anti-Jitter Settling
-    // ============================================================
-    
-    // PERFECT STABILITY: If either particle is Sticky on Sphere (w > 0.5) 
-    // or Sleeping on Ground (w > 1.5), we bypass self-collision.
-    // This allows the world collision to have the final, absolute word.
     if (positions[i].w > 0.5f || positions[j].w > 0.5f) return;
 
-    // DEAD-ZONE: Ignore micro-penetrations to prevent high-frequency chatter
-    if (penetration < 0.002f) return;
-
-    // GROUND SETTLING FACTOR:
-    float groundLevelA = positions[i].y - (selfCollisionRadius * 0.5f);
-    float groundLevelB = positions[j].y - (selfCollisionRadius * 0.5f);
+    // Phase 1: Analytic CCD
+    float hitTime;
+    vec3 closestA, closestB;
+    
+    bool ccdHit = ccdParticleCollision(
+        curPosA, prevPosA,
+        curPosB, prevPosB,
+        selfCollisionRadius,
+        hitTime, closestA, closestB);
+    
+    // Phase 2: Multi-sample verification
+    float multiSampleTime;
+    float multiSampleDist = multiSampleCCD(
+        curPosA, prevPosA,
+        curPosB, prevPosB,
+        multiSampleTime);
+    
+    float effectiveDist = min(sqrt(dot(closestA - closestB, closestA - closestB)), multiSampleDist);
+    
+    if (effectiveDist >= selfCollisionRadius) return;
+    
+    // Phase 3: Calculate penetration
+    float penetration = selfCollisionRadius - effectiveDist;
+    
+    // Ground settling factors
+    float groundLevelA = curPosA.y - (selfCollisionRadius * 0.5f);
+    float groundLevelB = curPosB.y - (selfCollisionRadius * 0.5f);
     float settlingA = smoothstep(0.0f, 0.2f, groundLevelA);
     float settlingB = smoothstep(0.0f, 0.2f, groundLevelB);
-    float settlingFactor = min(settlingA, settlingB);
-
-    // Dynamic correction: much softer when settled on ground
-    float correctionFactor = mix(0.05f, 0.35f, settlingFactor);
     
-    // Softening curve
-    float softPenetration = penetration * penetration / (penetration + 0.005f);
-    vec3 correction = n * (softPenetration * correctionFactor);
-    
-    // Apply position correction
-    positions[i].xyz += correction;
-    positions[j].xyz -= correction;
-
-    // ============================================================
-    // STABLE VELOCITY DAMPING: Zero-Energy Settling
-    // ============================================================
-    vec3 velA = positions[i].xyz - prevPositions[i].xyz;
-    vec3 velB = positions[j].xyz - prevPositions[j].xyz;
-    vec3 relVel = velA - velB;
-    float relVelNormal = dot(relVel, n);
-
-    if (relVelNormal < 0.0) {
-        // Stronger damping for settled particles
-        float localDamping = mix(0.95f, 0.7f, settlingFactor);
-        vec3 dampImpulse = n * (relVelNormal * localDamping);
-        
-        prevPositions[i].xyz += dampImpulse * 0.5f;
-        prevPositions[j].xyz -= dampImpulse * 0.5f;
-    }
-    
-    // Maintain stability by moving prevPositions with correction
-    // Use a high factor (1.0) for particles on ground to kill energy
-    float prevCorrFactor = mix(1.0f, 0.8f, settlingFactor);
-    prevPositions[i].xyz += correction * prevCorrFactor;
-    prevPositions[j].xyz -= correction * prevCorrFactor;
+    // Phase 4: Apply correction
+    resolveCollision(i, j, closestA, closestB, penetration, hitTime, settlingA, settlingB);
 }

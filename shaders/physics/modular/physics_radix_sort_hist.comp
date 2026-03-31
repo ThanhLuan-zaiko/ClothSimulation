@@ -4,10 +4,9 @@
 #extension GL_KHR_shader_subgroup_basic : require
 #extension GL_KHR_shader_subgroup_arithmetic : require
 
-#include "physics_common.glsl"
+layout(local_size_x = 256) in;
 
-layout(std430, binding = 13) buffer SortedIndicesSSBO { uint sortedIndices[]; };
-layout(std430, binding = 14) buffer SortTempSSBO { uint sortTemp[]; };
+#include "physics_common.glsl"
 
 #define HistOffset (numParticles)
 uniform uint bitOffset;
