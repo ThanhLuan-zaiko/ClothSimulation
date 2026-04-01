@@ -21,20 +21,21 @@ const float CCD_TOLERANCE = 0.001f;      // TOI tolerance
 
 float findTOI_BinarySearch(
     vec3 startPos, vec3 endPos,
-    vec3 sphereCenter, float sphereRadius, float margin,
+    vec3 sCenter, float sRad, float margin,
     out vec3 outNormal, out vec3 outImpactPos)
 {
-    float minDist = sphereRadius + margin;
+    float minDist = sRad + margin;
     float minDistSq = minDist * minDist;
 
     vec3 vel = endPos - startPos;
     float velLen = length(vel);
 
     if (velLen < 0.0001f) {
-        vec3 toSphere = startPos - sphereCenter;
+        vec3 toSphere = startPos - sCenter;
         float distSq = dot(toSphere, toSphere);
         if (distSq < minDistSq) {
-            outNormal = normalize(toSphere);
+            float d = sqrt(distSq);
+            outNormal = (d > EPSILON) ? (toSphere / d) : vec3(0, 1, 0);
             outImpactPos = startPos;
             return 0.0f;
         }
@@ -46,15 +47,16 @@ float findTOI_BinarySearch(
     float toi = 1.0f;
 
     vec3 testPos = startPos;
-    vec3 toSphere = testPos - sphereCenter;
+    vec3 toSphere = testPos - sCenter;
     if (dot(toSphere, toSphere) < minDistSq) {
-        outNormal = normalize(toSphere);
+        float d = length(toSphere);
+        outNormal = (d > EPSILON) ? (toSphere / d) : vec3(0, 1, 0);
         outImpactPos = startPos;
         return 0.0f;
     }
 
     testPos = endPos;
-    toSphere = testPos - sphereCenter;
+    toSphere = testPos - sCenter;
     if (dot(toSphere, toSphere) >= minDistSq) {
         return 1.0f;
     }
@@ -62,7 +64,7 @@ float findTOI_BinarySearch(
     for (int i = 0; i < CCD_MAX_ITERATIONS; i++) {
         float tMid = (tMin + tMax) * 0.5f;
         testPos = startPos + vel * tMid;
-        toSphere = testPos - sphereCenter;
+        toSphere = testPos - sCenter;
         float distSq = dot(toSphere, toSphere);
 
         if (abs(distSq - minDistSq) < CCD_TOLERANCE) {
@@ -79,7 +81,9 @@ float findTOI_BinarySearch(
     }
 
     outImpactPos = startPos + vel * toi;
-    outNormal = normalize(outImpactPos - sphereCenter);
+    vec3 finalToSphere = outImpactPos - sCenter;
+    float fd = length(finalToSphere);
+    outNormal = (fd > EPSILON) ? (finalToSphere / fd) : vec3(0, 1, 0);
 
     return toi;
 }
@@ -90,25 +94,28 @@ float findTOI_BinarySearch(
 
 float findTOI_Terrain(
     vec3 startPos, vec3 endPos,
-    float groundLevel, float margin,
+    float margin,
     out vec3 outNormal, out vec3 outImpactPos)
 {
-    float minTerrainY = groundLevel + margin;
     vec3 vel = endPos - startPos;
-
-    if (startPos.y > minTerrainY && endPos.y > minTerrainY) {
-        return 1.0f;
-    }
 
     float tMin = 0.0f;
     float tMax = 1.0f;
     float toi = 1.0f;
 
+    // Early check: if both start and end are above terrain+margin, no collision
+    float hStart = getTerrainHeight(startPos.x, startPos.z) + margin;
+    float hEnd = getTerrainHeight(endPos.x, endPos.z) + margin;
+    if (startPos.y > hStart && endPos.y > hEnd) {
+        return 1.0f;
+    }
+
     for (int i = 0; i < CCD_MAX_ITERATIONS; i++) {
         float tMid = (tMin + tMax) * 0.5f;
         vec3 testPos = startPos + vel * tMid;
+        float hMid = getTerrainHeight(testPos.x, testPos.z) + margin;
 
-        if (testPos.y < minTerrainY) {
+        if (testPos.y < hMid) {
             tMax = tMid;
             toi = tMid;
         } else {
@@ -119,10 +126,22 @@ float findTOI_Terrain(
     }
 
     outImpactPos = startPos + vel * toi;
-    outImpactPos.y = minTerrainY;
-    outNormal = vec3(0.0, 1.0, 0.0);
+    float hImpact = getTerrainHeight(outImpactPos.x, outImpactPos.z) + margin;
+    outImpactPos.y = hImpact;
+    outNormal = getTerrainNormal(outImpactPos.x, outImpactPos.z);
 
     return toi;
+}
+
+// ============================================================================
+// ATOMIC OPERATIONS
+// ============================================================================
+
+void atomicAddVec3(uint baseIdx, vec3 delta) {
+    const float scale = 10000.0;
+    atomicAdd(deltaPositions[baseIdx * 3 + 0], int(delta.x * scale));
+    atomicAdd(deltaPositions[baseIdx * 3 + 1], int(delta.y * scale));
+    atomicAdd(deltaPositions[baseIdx * 3 + 2], int(delta.z * scale));
 }
 
 // ============================================================================
@@ -130,75 +149,83 @@ float findTOI_Terrain(
 // ============================================================================
 
 void applySphereCollisionResponse(
-    uint particleIdx,
-    vec3 impactPos, vec3 normal, float toi,
-    float debugState)
+    uint pIdx,
+    vec3 iPos, vec3 norm, float t,
+    float dState)
 {
-    vec3 curPos = positions[particleIdx].xyz;
-    vec3 prevPos = prevPositions[particleIdx].xyz;
-    vec3 vel = curPos - prevPos;
+    vec3 cPos = positions[pIdx].xyz;
+    vec3 pPos = prevPositions[pIdx].xyz;
+    vec3 v = cPos - pPos;
 
-    float minDist = sphereRadius + collisionMargin;
-    vec3 surfacePos = sphereCenter + normal * minDist;
+    float mDist = sphereRadius + collisionMargin;
+    vec3 sPos = sphereCenter + norm * mDist;
 
-    float normalVel = dot(vel, normal);
-    vec3 tangentVel = vel - normalVel * normal;
+    // Displacement correction
+    vec3 corr = sPos - cPos;
+    atomicAddVec3(pIdx, corr);
 
-    positions[particleIdx].xyz = surfacePos;
+    // Update prevPos to maintain correct velocity after collision
+    float nVel = dot(v, norm);
+    vec3 tVel = v - nVel * norm;
 
-    float contactAngle = dot(normal, vec3(0.0, 1.0, 0.0));
-    bool onTop = contactAngle > 0.6f;
+    float cAngle = dot(norm, vec3(0.0, 1.0, 0.0));
+    bool onTop = cAngle > 0.6f;
 
-    if (onTop && length(vel) < staticFrictionThreshold) {
-        prevPositions[particleIdx].xyz = surfacePos - tangentVel * 0.15f;
+    if (onTop && length(v) < staticFrictionThreshold) {
+        prevPositions[pIdx].xyz = sPos - tVel * 0.15f;
     } else {
-        float bounce = sphereBounce;
-        if (abs(normalVel) < sleepingThreshold) {
-            bounce = 0.0f;
+        float bnc = sphereBounce;
+        if (abs(nVel) < sleepingThreshold) {
+            bnc = 0.0f;
         }
 
-        vec3 newNormalVel = -normalVel * bounce * normal;
-        vec3 newTangentVel = tangentVel * sphereDynamicFriction;
+        vec3 newNVel = -nVel * bnc * norm;
+        vec3 newTVel = tVel * sphereDynamicFriction;
 
-        prevPositions[particleIdx].xyz = surfacePos - (newNormalVel + newTangentVel);
+        prevPositions[pIdx].xyz = sPos - (newNVel + newTVel);
     }
 
-    // Set debug color based on state
-    setParticleColor(particleIdx, getDebugColor(debugState));
+    setParticleColor(pIdx, getDebugColor(dState));
 }
 
 void applyTerrainCollisionResponse(
-    uint particleIdx,
-    vec3 impactPos, vec3 normal, float toi,
-    float terrainY, float debugState)
+    uint pIdx,
+    vec3 iPos, vec3 norm, float t,
+    float dState)
 {
-    vec3 curPos = positions[particleIdx].xyz;
-    vec3 prevPos = prevPositions[particleIdx].xyz;
-    vec3 vel = curPos - prevPos;
+    vec3 cPos = positions[pIdx].xyz;
+    vec3 pPos = prevPositions[pIdx].xyz;
+    vec3 v = cPos - pPos;
 
-    positions[particleIdx].xyz.y = terrainY;
+    float tY = getTerrainHeight(cPos.x, cPos.z) + collisionMargin;
+    vec3 sPos = cPos;
+    sPos.y = tY;
 
-    float normalVel = dot(vel, normal);
-    vec3 tangentVel = vel - normalVel * normal;
+    // Displacement correction
+    vec3 corr = sPos - cPos;
+    atomicAddVec3(pIdx, corr);
 
-    float sleepThresh = sleepingThreshold * 3.0f;
+    // Velocity projection
+    float nVel = dot(v, norm);
+    vec3 tVel = v - nVel * norm;
 
-    if (length(vel) < sleepThresh) {
-        prevPositions[particleIdx].xyz = positions[particleIdx].xyz - tangentVel * 0.2f;
+    float sThresh = sleepingThreshold * 3.0f;
+
+    if (length(v) < sThresh) {
+        prevPositions[pIdx].xyz = sPos - tVel * 0.2f;
     } else {
-        float normalDamping = 0.2f;
-        float tangentFriction = 0.25f;
+        float nDamp = 0.15f;
+        float tFric = 0.35f;
 
-        if (normalVel < 0.0) {
-            vec3 newVel = tangentVel * tangentFriction - normal * (-normalVel * normalDamping);
-            prevPositions[particleIdx].xyz = positions[particleIdx].xyz - newVel;
+        if (nVel < 0.0) {
+            vec3 newV = tVel * tFric - norm * (-nVel * nDamp);
+            prevPositions[pIdx].xyz = sPos - newV;
         } else {
-            prevPositions[particleIdx].xyz = positions[particleIdx].xyz - vel * 0.15f;
+            prevPositions[pIdx].xyz = sPos - v * 0.15f;
         }
     }
 
-    // Set debug color based on state
-    setParticleColor(particleIdx, getDebugColor(debugState));
+    setParticleColor(pIdx, getDebugColor(dState));
 }
 
 // ============================================================================
@@ -222,76 +249,41 @@ void main() {
             sphereCenter, sphereRadius, collisionMargin,
             normal, impactPos);
 
-        // Check if particle is in margin zone (Orange)
-        vec3 toSphere = curPos - sphereCenter;
-        float distToSphere = length(toSphere);
-        float marginDist = sphereRadius + collisionMargin;
-        
-        if (distToSphere < marginDist + 1.0f && distToSphere > marginDist) {
-            debugState = DEBUG_STATE_SPHERE_MARGIN;
-            setParticleColor(globalIdx, DEBUG_COLOR_SPHERE_MARGIN);
-        }
-
         if (toi < 1.0f) {
-            // Check for CCD failure - penetration still occurred (Red)
+            debugState = DEBUG_STATE_SPHERE_CCD_FAIL;
+            setParticleColor(globalIdx, DEBUG_COLOR_SPHERE_CCD_FAIL);
+            
+            float marginDist = sphereRadius + collisionMargin;
             vec3 surfacePos = sphereCenter + normal * marginDist;
-            float penetrationDepth = marginDist - length(curPos - sphereCenter);
+            vec3 correction = surfacePos - curPos;
             
-            if (penetrationDepth > 0.1f) {
-                debugState = DEBUG_STATE_SPHERE_CCD_FAIL;
-            } else {
-                debugState = DEBUG_STATE_SPHERE_MARGIN;
-            }
-            
-            applySphereCollisionResponse(globalIdx, impactPos, normal, toi, debugState);
+            // Add correction to deltas (Jacobi style)
+            atomicAddVec3(globalIdx, correction * 0.2); // Very conservative delta
         }
     }
 
     // Phase 2: Terrain collision with CCD
     if (debugState == DEBUG_STATE_NORMAL) {
         vec3 normal, impactPos;
-        float terrainY = max(groundLevel, groundLevel);
         float toi = findTOI_Terrain(
             prevPos, curPos,
-            terrainY, collisionMargin,
+            collisionMargin,
             normal, impactPos);
 
-        // Check if particle is in terrain margin zone (Lime)
-        float terrainHeight = getTerrainHeight(curPos.x, curPos.z);
-        float heightAboveTerrain = curPos.y - terrainHeight;
-        
-        if (heightAboveTerrain < collisionMargin + 1.0f && heightAboveTerrain > collisionMargin) {
-            debugState = DEBUG_STATE_TERRAIN_MARGIN;
-            setParticleColor(globalIdx, DEBUG_COLOR_TERRAIN_MARGIN);
-        }
-
         if (toi < 1.0f) {
-            // Check for terrain CCD failure (Yellow)
-            float penetrationDepth = terrainHeight + collisionMargin - curPos.y;
+            debugState = DEBUG_STATE_TERRAIN_CCD_FAIL;
+            setParticleColor(globalIdx, DEBUG_COLOR_TERRAIN_CCD_FAIL);
             
-            if (penetrationDepth > 0.1f) {
-                debugState = DEBUG_STATE_TERRAIN_CCD_FAIL;
-            } else {
-                debugState = DEBUG_STATE_TERRAIN_MARGIN;
-            }
+            float terrainH = getTerrainHeight(curPos.x, curPos.z);
+            float minY = terrainH + collisionMargin;
+            vec3 surfacePos = curPos;
+            surfacePos.y = minY;
+            vec3 correction = surfacePos - curPos;
             
-            applyTerrainCollisionResponse(globalIdx, impactPos, normal, toi, terrainY, debugState);
+            atomicAddVec3(globalIdx, correction * 0.2);
         }
     }
 
-    // Phase 3: Velocity clamping
-    vec3 finalVel = positions[globalIdx].xyz - prevPositions[globalIdx].xyz;
-    float maxVel = maxVelocity * deltaTime;
-
-    if (length(finalVel) > maxVel) {
-        finalVel = normalize(finalVel) * maxVel;
-        positions[globalIdx].xyz = prevPositions[globalIdx].xyz + finalVel;
-    }
-
-    // Set final debug state if not already set
-    if (debugState == DEBUG_STATE_NORMAL) {
-        setParticleColor(globalIdx, DEBUG_COLOR_NORMAL);
-    }
-    
+    // Preserve debug state
     positions[globalIdx].w = float(debugState);
 }

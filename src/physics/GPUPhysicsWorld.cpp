@@ -270,9 +270,33 @@ bool GPUPhysicsWorld::LoadComputeShaders() {
     }
 
     m_ClearGridShader = Shader::CreateComputeShaderFromSource(preprocess("shaders/physics/modular/physics_clear_grid.comp"));
-    if (!m_ClearGridShader.GetID()) return false;
 
-    m_ShadersLoaded = true;
+    auto setupBindings = [](const Shader& shader) {
+        if (!shader.GetID()) return;
+        shader.Bind();
+        unsigned int block0 = glGetUniformBlockIndex(shader.GetID(), "PhysicsParams");
+        if (block0 != GL_INVALID_INDEX) glUniformBlockBinding(shader.GetID(), block0, 0);
+        unsigned int block1 = glGetUniformBlockIndex(shader.GetID(), "CollisionParams");
+        if (block1 != GL_INVALID_INDEX) glUniformBlockBinding(shader.GetID(), block1, 1);
+        
+        int terrainLoc = glGetUniformLocation(shader.GetID(), "terrainHeightmap");
+        if (terrainLoc != -1) glUniform1i(terrainLoc, 0);
+    };
+
+    setupBindings(m_IntegrateShader);
+    setupBindings(m_SolveShader);
+    setupBindings(m_BendShader);
+    setupBindings(m_ApplyDeltasShader);
+    setupBindings(m_RadixSortHistShader);
+    setupBindings(m_RadixSortScanShader);
+    setupBindings(m_RadixSortScatterShader);
+    setupBindings(m_SweepPruneShader);
+    setupBindings(m_ResolveShader);
+    setupBindings(m_CCDSolveShader);
+    setupBindings(m_CollideShader);
+    setupBindings(m_StrainLimitShader);
+
+    m_ShadersLoaded = m_IntegrateShader.GetID() && m_SolveShader.GetID() && m_ApplyDeltasShader.GetID();
     return m_ShadersLoaded;
 }
 
@@ -449,140 +473,97 @@ void GPUPhysicsWorld::SetParticlesPinned(size_t start, size_t count, bool pinned
 void GPUPhysicsWorld::Update(float deltaTime) {
     if (!m_Initialized || m_TotalParticles == 0) return;
 
-    if (m_TotalParticles > MAX_PARTICLES) return;
-
-    // ========== DEBUG: Check deltaTime ==========
-    // If deltaTime is too large or zero, physics will break
-    if (deltaTime <= 0.0f || deltaTime > 0.5f) {
-        // Skip this frame if deltaTime is invalid
-        return;
-    }
-
-    unsigned int totalGroups = (unsigned int)(m_TotalParticles + 127) / 128;
+    // 1. Configuration: High frequency, low iteration for performance (Total 8-10 solves)
+    const int numSubsteps = 5; 
+    const int solveIterations = 2; 
+    float subStepDt = deltaTime / (float)numSubsteps;
     unsigned int numBlocks = (unsigned int)(m_TotalParticles + 255) / 256;
 
-    // Update UBOs
-    UpdateUniforms(deltaTime);
-    glBindBufferBase(GL_UNIFORM_BUFFER, 0, m_UniformBuffer);
-    glBindBufferBase(GL_UNIFORM_BUFFER, 1, m_CollisionUniformBuffer);
-
-    if (m_Terrain && m_TerrainHeightmapTexture) {
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, m_TerrainHeightmapTexture);
-    }
-
-    // ========================================================================
-    // PHASE 1: Integration (Verlet)
-    // ========================================================================
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, m_PosBuffer);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, m_PrevPosBuffer);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, m_PinnedFlagsBuffer);
-
-    m_IntegrateShader.Bind();
-    glDispatchCompute(numBlocks, 1, 1);
-    // GL_SHADER_STORAGE_BARRIER_BIT is sufficient for SSBO synchronization
-    // GL_SHADER_IMAGE_BARRIER_BIT = 0x20 (not needed unless using imageLoad/imageStore)
-    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT);
-
-    // ========================================================================
-    // PHASE 2: BROADPHASE - Spatial Hash Grid
-    // ========================================================================
-    // Reset grid header and pair count
-    const unsigned int GRID_HASH_SIZE = 65536u;
-    std::vector<unsigned int> clearGrid(GRID_HASH_SIZE * 2, 0);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_GridHeaderBuffer);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, clearGrid.size() * sizeof(unsigned int), clearGrid.data());
-    
+    // 2. Broadphase (Once per frame is sufficient)
     unsigned int zero = 0;
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_PairCountBuffer);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(unsigned int), &zero);
+    glNamedBufferSubData(m_SortTempBuffer, (m_TotalParticles + 8192) * sizeof(unsigned int), sizeof(unsigned int), &zero);
 
-    // Bind spatial hash buffers
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 14, m_GridHeaderBuffer);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 15, m_GridItemsBuffer);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 12, m_CollisionPairsBuffer);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 11, m_PairCountBuffer);
-
-    // Build spatial hash grid
-    m_SpatialHashShader.Bind();
-    glDispatchCompute(numBlocks, 1, 1);
-    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-
-    // ========================================================================
-    // PHASE 3: CCD COLLISION with Binary Search TOI
-    // ========================================================================
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, m_PosBuffer);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, m_PrevPosBuffer);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, m_DeltaPositionBuffer);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, m_PinnedFlagsBuffer);
-
-    m_CCDSolveShader.Bind();
-    glDispatchCompute(numBlocks, 1, 1);
-    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-
-    // ========================================================================
-    // PHASE 4: Constraint Solving (Graph Coloring) - Multiple iterations
-    // ========================================================================
-    int iterations = m_Config.iterations;
-    for (int i = 0; i < iterations; i++) {
+    unsigned int inBuffer = m_SortedIndicesBuffer;
+    unsigned int outBuffer = m_SortTempBuffer;
+    for (uint32_t bit = 0; bit < 32; bit += 4) {
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, m_PosBuffer);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, m_PrevPosBuffer);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, m_ConstraintBuffer);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, m_PinnedFlagsBuffer);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, m_ParticleDataBuffer);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, m_ConstraintIndicesBuffer);
-
-        m_SolveShader.Bind();
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 10, inBuffer);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 11, outBuffer);
+        m_RadixSortHistShader.Bind();
+        m_RadixSortHistShader.SetUint("bitOffset", bit);
         glDispatchCompute(numBlocks, 1, 1);
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-    }
-
-    // ========================================================================
-    // PHASE 5: Dihedral Bending Solver
-    // ========================================================================
-    if (m_TotalBendingConstraints > 0) {
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, m_PosBuffer);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, m_PrevPosBuffer);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, m_BendingConstraintBuffer);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, m_DeltaPositionBuffer);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, m_PinnedFlagsBuffer);
-
-        m_BendShader.Bind();
-        m_BendShader.SetInt("numBendingConstraints", (int)m_TotalBendingConstraints);
-        glDispatchCompute((unsigned int)(m_TotalBendingConstraints + 255) / 256, 1, 1);
+        m_RadixSortScanShader.Bind();
+        m_RadixSortScanShader.SetUint("numBlocks", numBlocks);
+        glDispatchCompute(1, 1, 1);
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+        m_RadixSortScatterShader.Bind();
+        m_RadixSortScatterShader.SetUint("bitOffset", bit);
+        glDispatchCompute(numBlocks, 1, 1);
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+        std::swap(inBuffer, outBuffer);
+    }
+    if (inBuffer != m_SortedIndicesBuffer) {
+        glCopyNamedBufferSubData(inBuffer, m_SortedIndicesBuffer, 0, 0, m_TotalParticles * sizeof(unsigned int));
     }
 
-    // ========================================================================
-    // PHASE 6: Strain Limiting
-    // ========================================================================
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 10, m_SortedIndicesBuffer);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 11, m_SortTempBuffer); 
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 12, m_CollisionPairsBuffer);
+    m_SweepPruneShader.Bind();
+    glDispatchCompute(numBlocks, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+    // 3. Persistent Bindings for the loop
+    if (m_Terrain && m_TerrainHeightmapTexture) {
+        glBindTextureUnit(0, m_TerrainHeightmapTexture);
+    }
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, m_UniformBuffer);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 1, m_CollisionUniformBuffer);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, m_PosBuffer);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, m_PrevPosBuffer);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, m_ConstraintBuffer);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, m_DeltaPositionBuffer);
-
-    m_StrainLimitShader.Bind();
-    glDispatchCompute(numBlocks, 1, 1);
-    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-
-    // ========================================================================
-    // PHASE 7: Apply Delta Positions (accumulated from collisions)
-    // ========================================================================
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, m_PosBuffer);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, m_DeltaPositionBuffer);
-
-    m_ApplyDeltasShader.Bind();
-    glDispatchCompute(numBlocks, 1, 1);
-    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-
-    // ========================================================================
-    // PHASE 8: Final Velocity Clamping (safety)
-    // ========================================================================
-    // Re-bind collision shader for final velocity check
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, m_PosBuffer);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, m_PrevPosBuffer);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, m_PinnedFlagsBuffer);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, m_ParticleDataBuffer);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, m_ConstraintIndicesBuffer);
 
+    // 4. Substepping Loop
+    for (int s = 0; s < numSubsteps; s++) {
+        UpdateUniforms(subStepDt); // Updates gravity_dt with subStepDt
+        
+        // Phase A: Integrate (Predict)
+        m_IntegrateShader.Bind();
+        glDispatchCompute(numBlocks, 1, 1);
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+        // Phase B: Solve (PBD)
+        m_SolveShader.Bind();
+        for (int i = 0; i < solveIterations; i++) {
+            for (int color = 0; color < MAX_COLORS; color++) {
+                m_SolveShader.SetInt("current_color", color);
+                glDispatchCompute(numBlocks, 1, 1);
+                glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+            }
+        }
+
+        // Phase C: Collisions
+        glClearNamedBufferData(m_DeltaPositionBuffer, GL_R32I, GL_RED_INTEGER, GL_INT, nullptr);
+        m_ResolveShader.Bind();
+        glDispatchCompute(numBlocks, 1, 1);
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+        m_CCDSolveShader.Bind();
+        glDispatchCompute(numBlocks, 1, 1);
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+        // Phase D: Finalize Substep
+        m_ApplyDeltasShader.Bind();
+        glDispatchCompute(numBlocks, 1, 1);
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    }
+
+    // 5. One final safety/clamping pass
     m_CollideShader.Bind();
     glDispatchCompute(numBlocks, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
@@ -632,45 +613,18 @@ void GPUPhysicsWorld::UpdateUniforms(float deltaTime) {
 
     // Collision Parameters (UBO binding 1)
     struct CollisionParamsData {
-        glm::vec3 sphereCenter; float padding1;
-        float sphereRadius;
-        float groundLevel;
-        float collisionMargin;
-        float dampingFactor;
-        float frictionFactor;
-        int collisionSubsteps;
-        float sphereStaticFriction;
-        float sphereDynamicFriction;
-        float sphereBounce;
-        float sphereGripFactor;
-        float staticFrictionThreshold;
-        float sleepingThreshold;
-        float sphereWrapFactor;
-        float terrainDamping;
-        float ccdSubsteps;
-        float conservativeFactor;
-        float maxPenetrationCorrection;
-        float padding2[1];
+        glm::vec4 sphereCenter_Radius;
+        glm::vec4 ground_margin_damping_friction;
+        glm::vec4 substeps_friction_bounce_grip;
+        glm::vec4 thresholds_wrap_damping;
+        glm::vec4 ccd_cons_maxpen_pad;
     } c;
 
-    c.sphereCenter = m_Collision.sphereCenter;
-    c.sphereRadius = m_Collision.sphereRadius;
-    c.groundLevel = m_Collision.groundLevel;
-    c.collisionMargin = m_Config.collisionMargin;
-    c.dampingFactor = m_Config.dampingFactor;
-    c.frictionFactor = m_Config.frictionFactor;
-    c.collisionSubsteps = m_Config.collisionSubsteps;
-    c.sphereStaticFriction = m_Config.sphereStaticFriction;
-    c.sphereDynamicFriction = m_Config.sphereDynamicFriction;
-    c.sphereBounce = m_Config.sphereBounce;
-    c.sphereGripFactor = m_Config.sphereGripFactor;
-    c.staticFrictionThreshold = m_Config.staticFrictionThreshold;
-    c.sleepingThreshold = m_Config.sleepingThreshold;
-    c.sphereWrapFactor = m_Config.sphereWrapFactor;
-    c.terrainDamping = m_Config.terrainDamping;
-    c.ccdSubsteps = m_Config.ccdSubsteps;
-    c.conservativeFactor = m_Config.conservativeFactor;
-    c.maxPenetrationCorrection = m_Config.maxPenetrationCorrection;
+    c.sphereCenter_Radius = glm::vec4(m_Collision.sphereCenter, m_Collision.sphereRadius);
+    c.ground_margin_damping_friction = glm::vec4(m_Collision.groundLevel, m_Config.collisionMargin, m_Config.dampingFactor, m_Config.frictionFactor);
+    c.substeps_friction_bounce_grip = glm::vec4((float)m_Config.collisionSubsteps, m_Config.sphereStaticFriction, m_Config.sphereDynamicFriction, m_Config.sphereBounce);
+    c.thresholds_wrap_damping = glm::vec4(m_Config.sphereGripFactor, m_Config.staticFrictionThreshold, m_Config.sleepingThreshold, m_Config.sphereWrapFactor);
+    c.ccd_cons_maxpen_pad = glm::vec4(m_Config.terrainDamping, m_Config.ccdSubsteps, m_Config.conservativeFactor, m_Config.maxPenetrationCorrection);
 
     glBindBuffer(GL_UNIFORM_BUFFER, m_CollisionUniformBuffer);
     glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(CollisionParamsData), &c);

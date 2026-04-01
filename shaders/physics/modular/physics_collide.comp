@@ -9,26 +9,24 @@ layout(local_size_x = 256) in;
 #include "physics_common.glsl"
 
 // ============================================================================
-// HARD-CODED COLLISION PARAMETERS (DEBUG - force large margins)
+// COLLISION PARAMETERS
 // ============================================================================
 
-const float SPHERE_MARGIN = 2.5f;     // VERY LARGE - catch particles 2.5m before sphere
-const float TERRAIN_MARGIN = 1.0f;    // LARGE - catch particles 1m before terrain
-const float VELOCITY_DAMPING = 0.08f; // Heavy damping on collision (92% loss)
+const float VELOCITY_DAMPING = 0.5f; // Standard damping on collision
 
 // ============================================================================
-// SPHERE COLLISION - EARLY DETECTION WITH LARGE MARGIN
+// SPHERE COLLISION - EARLY DETECTION
 // ============================================================================
 
 bool sphereCollision(inout vec3 pos, inout vec3 prevPos, inout float debugState) {
-    float sphereRadiusWithMargin = sphereRadius + SPHERE_MARGIN;
+    float sphereRadiusWithMargin = sphereRadius + collisionMargin;
     float minDistSq = sphereRadiusWithMargin * sphereRadiusWithMargin;
 
     vec3 toSphere = pos - sphereCenter;
     float distSq = dot(toSphere, toSphere);
     vec3 vel = pos - prevPos;
 
-    // Check if particle will collide this frame
+    // Check if particle is inside
     if (distSq < minDistSq) {
         float dist = sqrt(distSq);
         vec3 normal = (dist > EPSILON) ? (toSphere / dist) : vec3(0.0, 1.0, 0.0);
@@ -39,52 +37,19 @@ bool sphereCollision(inout vec3 pos, inout vec3 prevPos, inout float debugState)
 
         // Check for deep penetration (Dark Red)
         float penetrationDepth = sphereRadiusWithMargin - dist;
-        if (penetrationDepth > 0.5f) {
+        if (penetrationDepth > 0.1f) {
             debugState = DEBUG_STATE_PENETRATION;
         } else {
             debugState = DEBUG_STATE_SPHERE_MARGIN;
         }
 
-        // HEAVY damping - kill most velocity
+        // Dampen velocity
         vec3 tangentVel = vel * VELOCITY_DAMPING;
         prevPos = surfacePos - tangentVel;
 
         setParticleColor(uint(gl_GlobalInvocationID.x), getDebugColor(debugState));
         return true;
     }
-
-    // Ray-sphere intersection for CCD
-    vec3 toSpherePrev = prevPos - sphereCenter;
-    float a = dot(vel, vel);
-    if (a < EPSILON) return false;
-
-    float b = 2.0 * dot(toSpherePrev, vel);
-    float c = dot(toSpherePrev, toSpherePrev) - minDistSq;
-
-    float discriminant = b * b - 4.0 * a * c;
-    if (discriminant < 0.0) return false;
-
-    float sqrtDisc = sqrt(discriminant);
-    float t = (-b - sqrtDisc) / (2.0 * a);
-
-    if (t >= 0.0 && t <= 1.0) {
-        // Collision will happen at time t
-        vec3 impactPos = prevPos + vel * t;
-        vec3 normal = normalize(impactPos - sphereCenter);
-        vec3 surfacePos = sphereCenter + normal * sphereRadiusWithMargin;
-
-        // Move to surface and damp velocity
-        float remainingTime = 1.0 - t;
-        vec3 tangentVel = vel * remainingTime * 0.15f;
-
-        pos = surfacePos + tangentVel;
-        prevPos = surfacePos - tangentVel * 0.5f;
-
-        debugState = DEBUG_STATE_SPHERE_MARGIN;
-        setParticleColor(uint(gl_GlobalInvocationID.x), getDebugColor(debugState));
-        return true;
-    }
-
     return false;
 }
 
@@ -97,14 +62,12 @@ bool terrainCollision(inout vec3 pos, inout vec3 prevPos, inout float debugState
 
     // Check current position
     float curTerrainH = getTerrainHeight(pos.x, pos.z);
-    float minTerrainY = curTerrainH + TERRAIN_MARGIN;
+    float minTerrainY = curTerrainH + collisionMargin;
 
     if (pos.y < minTerrainY) {
-        vec3 normal = getTerrainNormal(pos.x, pos.z);
-        
         // Check for deep penetration (Dark Red)
         float penetrationDepth = minTerrainY - pos.y;
-        if (penetrationDepth > 0.5f) {
+        if (penetrationDepth > 0.1f) {
             debugState = DEBUG_STATE_PENETRATION;
         } else {
             debugState = DEBUG_STATE_TERRAIN_MARGIN;
@@ -112,35 +75,9 @@ bool terrainCollision(inout vec3 pos, inout vec3 prevPos, inout float debugState
         
         pos.y = minTerrainY;
 
-        // Heavy damping
+        // Damping
         vec3 tangentVel = vel * VELOCITY_DAMPING;
         prevPos = pos - tangentVel;
-
-        setParticleColor(uint(gl_GlobalInvocationID.x), getDebugColor(debugState));
-        return true;
-    }
-
-    // Simple CCD - check midpoint
-    vec3 midPos = prevPos + vel * 0.5f;
-    float midTerrainH = getTerrainHeight(midPos.x, midPos.z);
-    float midMinY = midTerrainH + TERRAIN_MARGIN;
-
-    if (midPos.y < midMinY) {
-        vec3 normal = getTerrainNormal(midPos.x, midPos.z);
-        midPos.y = midMinY;
-
-        // Check for CCD failure (Yellow)
-        float penetrationDepth = midMinY - midPos.y;
-        if (penetrationDepth > 0.3f) {
-            debugState = DEBUG_STATE_TERRAIN_CCD_FAIL;
-        } else {
-            debugState = DEBUG_STATE_TERRAIN_MARGIN;
-        }
-
-        // Dampen velocity heavily
-        vec3 tangentVel = vel * 0.1f;
-        pos = midPos + tangentVel * 0.5f;
-        prevPos = midPos - tangentVel * 0.5f;
 
         setParticleColor(uint(gl_GlobalInvocationID.x), getDebugColor(debugState));
         return true;
@@ -160,62 +97,45 @@ void main() {
 
     vec3 pos = positions[globalIdx].xyz;
     vec3 prevPos = prevPositions[globalIdx].xyz;
-    float debugState = DEBUG_STATE_NORMAL;
+    float debugState = positions[globalIdx].w;
 
-    // Phase 1: Sphere collision (check FIRST - sphere is above terrain)
+    // 1. Final Sphere Enforcement
     if (sphereRadius > 0.0) {
-        if (sphereCollision(pos, prevPos, debugState)) {
-            // debugState already set in sphereCollision
+        float minDist = sphereRadius + collisionMargin;
+        vec3 toSphere = pos - sphereCenter;
+        float distSq = dot(toSphere, toSphere);
+        if (distSq < minDist * minDist) {
+            float dist = sqrt(distSq);
+            vec3 normal = (dist > EPSILON) ? (toSphere / dist) : vec3(0.0, 1.0, 0.0);
+            pos = sphereCenter + normal * minDist;
+            
+            vec3 vel = pos - prevPos;
+            vec3 tangentVel = vel - dot(vel, normal) * normal;
+            prevPos = pos - tangentVel * 0.9;
         }
     }
 
-    // Phase 2: Terrain collision
-    if (terrainCollision(pos, prevPos, debugState)) {
-        // debugState already set in terrainCollision
-    }
-
-    // Phase 3: Ground fallback (lowest level)
-    if (pos.y < groundLevel + 0.5f) {
-        pos.y = groundLevel + 0.5f;
+    // 2. Final Terrain Enforcement
+    float terrainH = getTerrainHeight(pos.x, pos.z);
+    float minY = terrainH + collisionMargin;
+    if (pos.y < minY) {
+        pos.y = minY;
         vec3 vel = pos - prevPos;
-        prevPos = pos - vel * 0.1f;
-        if (debugState == DEBUG_STATE_NORMAL) debugState = DEBUG_STATE_TERRAIN_MARGIN;
-        setParticleColor(globalIdx, getDebugColor(debugState));
+        vec3 tNormal = getTerrainNormal(pos.x, pos.z);
+        vec3 tangentVel = vel - dot(vel, tNormal) * tNormal;
+        prevPos = pos - tangentVel * 0.8;
     }
 
     // Phase 4: Velocity clamping (PREVENT EXPLOSION)
     vec3 curVel = pos - prevPos;
     float curVelLen = length(curVel);
 
-    // Lower max velocity
-    float maxVel = 8.0f * deltaTime;
-    if (curVelLen > maxVel) {
+    float maxVel = maxVelocity * deltaTime;
+    if (curVelLen > maxVel && curVelLen > EPSILON) {
         curVel = normalize(curVel) * maxVel;
         pos = prevPos + curVel;
-        // Mark velocity explosion (Brown)
-        debugState = DEBUG_STATE_VELOCITY_EXPLOSION;
-        setParticleColor(globalIdx, getDebugColor(debugState));
-    }
-
-    // Phase 5: ABSOLUTE cap (very conservative)
-    vec3 finalVel = pos - prevPos;
-    float finalVelLen = length(finalVel);
-    float absoluteMaxVel = 6.0f * deltaTime;  // VERY LOW to prevent explosion
-
-    if (finalVelLen > absoluteMaxVel) {
-        finalVel = normalize(finalVel) * absoluteMaxVel;
-        pos = prevPos + finalVel;
-        // Mark velocity explosion (Brown)
-        debugState = DEBUG_STATE_VELOCITY_EXPLOSION;
-        setParticleColor(globalIdx, getDebugColor(debugState));
     }
 
     positions[globalIdx].xyz = pos;
-    positions[globalIdx].w = float(debugState);
     prevPositions[globalIdx].xyz = prevPos;
-    
-    // Set normal color if no issues detected
-    if (debugState == DEBUG_STATE_NORMAL) {
-        setParticleColor(globalIdx, DEBUG_COLOR_NORMAL);
-    }
 }

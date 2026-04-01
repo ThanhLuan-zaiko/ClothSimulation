@@ -125,6 +125,8 @@ float multiSampleCCD(
 // COLLISION RESOLUTION
 // ============================================================================
 
+const float MAX_SELF_CORRECTION = 0.05f; // Clamping per pair to prevent explosion
+
 void resolveCollision(
     uint idxA, uint idxB,
     vec3 closestA, vec3 closestB,
@@ -138,11 +140,16 @@ void resolveCollision(
     if (dist < EPSILON) return;
 
     vec3 normal = delta / dist;
+    
+    // Improved settling: if near ground, use higher damping/lower correction
     float settlingFactor = mix(groundFactorA, groundFactorB, 0.5);
-    float correctionFactor = mix(0.15f, 0.5f, settlingFactor);
-    correctionFactor = min(correctionFactor, MAX_CORRECTION_FACTOR);
-
+    float correctionFactor = mix(0.15f, 0.4f, settlingFactor); 
+    
     float softenedPenetration = penetration * correctionFactor;
+    
+    // Clamp correction to prevent "nổ"
+    softenedPenetration = min(softenedPenetration, MAX_SELF_CORRECTION);
+    
     vec3 correction = normal * softenedPenetration;
 
     atomicAdd(deltaPositions[idxA * 3 + 0], int(correction.x * 10000.0));
@@ -153,8 +160,8 @@ void resolveCollision(
     atomicAdd(deltaPositions[idxB * 3 + 1], int(-correction.y * 10000.0));
     atomicAdd(deltaPositions[idxB * 3 + 2], int(-correction.z * 10000.0));
 
-    // Set self-collision debug color (Cyan) for significant penetrations
-    if (penetration > selfCollisionRadius * 0.3f) {
+    // Set self-collision debug color (Cyan)
+    if (penetration > selfCollisionRadius * 0.1f) {
         setParticleColor(idxA, DEBUG_COLOR_SELF_COLLISION);
         setParticleColor(idxB, DEBUG_COLOR_SELF_COLLISION);
     }
@@ -221,10 +228,10 @@ void main() {
     }
 
     // Ground settling factors
-    float groundLevelA = curPosA.y - (selfCollisionRadius * 0.5f);
-    float groundLevelB = curPosB.y - (selfCollisionRadius * 0.5f);
-    float settlingA = smoothstep(0.0f, 0.2f, groundLevelA);
-    float settlingB = smoothstep(0.0f, 0.2f, groundLevelB);
+    float gLevelA = curPosA.y - (selfCollisionRadius * 0.5f);
+    float gLevelB = curPosB.y - (selfCollisionRadius * 0.5f);
+    float settlingA = smoothstep(0.0f, 0.2f, gLevelA);
+    float settlingB = smoothstep(0.0f, 0.2f, gLevelB);
 
     // Phase 4: Apply correction
     resolveCollision(i, j, closestA, closestB, penetration, hitTime, settlingA, settlingB);

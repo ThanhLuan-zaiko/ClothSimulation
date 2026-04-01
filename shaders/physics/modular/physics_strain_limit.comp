@@ -37,23 +37,6 @@ void setStrainDebugColor(uint idx, float strain, float strainRate) {
 }
 
 // ============================================================================
-// STRAIN CALCULATION
-// ============================================================================
-
-float calculateGreenLagrangeStrain(float inRestLength, float inCurrentLength)
-{
-    if (inRestLength < EPSILON) return 0.0;
-    float lambda = inCurrentLength / inRestLength;
-    return 0.5 * (lambda * lambda - 1.0);
-}
-
-float calculateStrainRate(float inPrevLength, float inCurrentLength, float inDt) {
-    if (inPrevLength < EPSILON || inDt < EPSILON) return 0.0;
-    float strain = (inCurrentLength - inPrevLength) / inPrevLength;
-    return strain / inDt;
-}
-
-// ============================================================================
 // STRAIN LIMITING
 // ============================================================================
 
@@ -62,7 +45,7 @@ void applyStrainLimiting(uint idx) {
 
     int p1 = c.indices.x;
     int p2 = c.indices.y;
-    float cRestLength = c.params.x;
+    float restLen = c.params.x;
     float constraintType = c.padding.x;
 
     if (pinnedFlags[p1] >= 0.5 && pinnedFlags[p2] >= 0.5) return;
@@ -73,77 +56,42 @@ void applyStrainLimiting(uint idx) {
     vec3 prevPos2 = prevPositions[p2].xyz;
 
     vec3 delta = pos2 - pos1;
-    float currentLength = length(delta);
+    float dist = length(delta);
 
-    if (currentLength < EPSILON) return;
+    if (dist < EPSILON) return;
 
-    vec3 prevDelta = prevPos2 - prevPos1;
-    float prevLength = length(prevDelta);
+    // Standard PBD strain limiting (clamping the distance)
+    float maxStrain = (constraintType == 0.0) ? MAX_STRAIN_RATE : MAX_STRAIN_RATE * 2.0;
+    float minLen = restLen * (1.0 - maxStrain);
+    float maxLen = restLen * (1.0 + maxStrain);
 
-    float strain = calculateGreenLagrangeStrain(cRestLength, currentLength);
-    float strainRate = calculateStrainRate(prevLength, currentLength, deltaTime);
+    float targetDist = clamp(dist, minLen, maxLen);
+    
+    if (abs(dist - targetDist) > EPSILON) {
+        float correction = (targetDist - dist) / dist;
+        correction *= STRAIN_LIMITING_STIFFNESS;
+        vec3 correctionVec = delta * correction * 0.5;
 
-    float maxStrain = MAX_STRAIN_RATE;
-    float maxStrainRate = MAX_STRAIN_RATE * 2.0;
-
-    if (constraintType == 0.0) {
-        maxStrain = MAX_STRAIN_RATE * 0.5;
-        maxStrainRate = MAX_STRAIN_RATE;
+        if (pinnedFlags[p1] < 0.5) {
+            atomicAddVec3(uint(p1), correctionVec);
+            setParticleColor(uint(p1), DEBUG_COLOR_STRAIN_RATE);
+        }
+        if (pinnedFlags[p2] < 0.5) {
+            atomicAddVec3(uint(p2), -correctionVec);
+            setParticleColor(uint(p2), DEBUG_COLOR_STRAIN_RATE);
+        }
     }
 
-    bool needsLimiting = false;
-    float targetLength = currentLength;
-
-    if (strain > maxStrain) {
-        targetLength = cRestLength * (1.0 + maxStrain);
-        needsLimiting = true;
-    } else if (strain < -maxStrain) {
-        targetLength = cRestLength * (1.0 - maxStrain);
-        needsLimiting = true;
-    }
-
-    if (abs(strainRate) > maxStrainRate) {
-        float rateCorrection = sign(strainRate) * maxStrainRate * deltaTime;
-        targetLength = prevLength + rateCorrection;
-        needsLimiting = true;
-    }
-
-    // Set debug colors for strain violations
-    if (abs(strainRate) > MAX_STRAIN_RATE * 0.5) {
-        setStrainDebugColor(uint(p1), strain, strainRate);
-        setStrainDebugColor(uint(p2), strain, strainRate);
-    }
-
-    if (!needsLimiting) return;
-
-    float correction = (targetLength - currentLength) / currentLength;
-    correction *= STRAIN_LIMITING_STIFFNESS;
-
-    vec3 correctionVec = delta * correction * 0.5;
-
-    if (pinnedFlags[p1] < 0.5) {
-        atomicAddVec3(p1, correctionVec);
-    }
-    if (pinnedFlags[p2] < 0.5) {
-        atomicAddVec3(p2, -correctionVec);
-    }
-
-    // Velocity damping
+    // Gentle velocity projection along constraint
+    vec3 dir = delta / dist;
     vec3 vel1 = pos1 - prevPos1;
     vec3 vel2 = pos2 - prevPos2;
+    float relVel = dot(vel1 - vel2, dir);
 
-    vec3 constraintDir = delta / currentLength;
-    float vel1Proj = dot(vel1, constraintDir);
-    float vel2Proj = dot(vel2, constraintDir);
-
-    float relVel = vel1Proj - vel2Proj;
-    float dampingCorrection = relVel * (1.0 - VELOCITY_DAMPING) * 0.5;
-
-    if (pinnedFlags[p1] < 0.5) {
-        prevPositions[p1].xyz -= constraintDir * dampingCorrection;
-    }
-    if (pinnedFlags[p2] < 0.5) {
-        prevPositions[p2].xyz += constraintDir * dampingCorrection;
+    if (abs(relVel) > 0.01) {
+        float vDamping = (1.0 - VELOCITY_DAMPING) * relVel * 0.5;
+        if (pinnedFlags[p1] < 0.5) prevPositions[p1].xyz += dir * vDamping;
+        if (pinnedFlags[p2] < 0.5) prevPositions[p2].xyz -= dir * vDamping;
     }
 }
 

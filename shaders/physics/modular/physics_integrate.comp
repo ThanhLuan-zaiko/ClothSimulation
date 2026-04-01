@@ -12,33 +12,27 @@ void main() {
     uint globalIdx = gl_GlobalInvocationID.x;
     if (globalIdx >= uint(numParticles)) return;
 
-    vec3 curPos = positions[globalIdx].xyz;
-    vec3 prevPos = prevPositions[globalIdx].xyz;
-    float isPinned = pinnedFlags[globalIdx];
+    if (pinnedFlags[globalIdx] >= 0.5f) return;
 
-    // Simple Verlet integration
-    vec3 velocity = (curPos - prevPos) * damping;
+    vec3 x_n = positions[globalIdx].xyz;
+    vec3 x_prev = prevPositions[globalIdx].xyz;
+
+    // 1. Calculate velocity from previous movement
+    vec3 velocity = (x_n - x_prev) * damping;
     
-    // Apply gravity
+    // 2. Add external forces
     velocity += gravity * gravityScale * deltaTime * deltaTime;
-    
-    // Apply air resistance/wind
     velocity *= airResistance;
     
-    vec3 nextPos = curPos + velocity;
+    // 3. Predict next position
+    vec3 x_predicted = x_n + velocity;
 
-    // Pinned particles stay put
-    if (isPinned >= 0.5f) {
-        nextPos = curPos;
-    }
-
-    // Update buffers
-    prevPositions[globalIdx].xyz = curPos;  // prev = old current
-    positions[globalIdx].xyz = nextPos;     // current = new position
+    // CRITICAL PBD RULE: 
+    // prevPositions now holds the starting position of this frame (x_n)
+    // positions now holds the predicted position for solving
+    prevPositions[globalIdx].xyz = x_n;
+    positions[globalIdx].xyz = x_predicted;
     
-    // Reset debug state to 0 (normal/white) at start of each frame
-    // Collision shaders will set appropriate debug state if needed
+    // Reset debug state
     positions[globalIdx].w = 0.0;
-
-    // NOTE: Spatial hash grid is currently unused in favor of Radix Sort Broadphase
 }

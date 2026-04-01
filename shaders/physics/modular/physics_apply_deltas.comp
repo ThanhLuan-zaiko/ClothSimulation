@@ -20,29 +20,30 @@ const float DELTA_DEBUG_THRESHOLD = 0.1f; // Moderate delta = mark for debugging
 void main() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= uint(numParticles)) return;
+    if (pinnedFlags[idx] >= 0.5) {
+        deltaPositions[idx * 3 + 0] = 0;
+        deltaPositions[idx * 3 + 1] = 0;
+        deltaPositions[idx * 3 + 2] = 0;
+        return;
+    }
 
-    // Apply accumulated deltas (Fixed-point 10000.0 scale)
+    // 1. Apply accumulated deltas (Collisions)
     const float invScale = 1.0 / 10000.0;
-
     float dx = float(deltaPositions[idx * 3 + 0]) * invScale;
     float dy = float(deltaPositions[idx * 3 + 1]) * invScale;
     float dz = float(deltaPositions[idx * 3 + 2]) * invScale;
-
     vec3 delta = vec3(dx, dy, dz);
-    float deltaMagnitude = length(delta);
 
-    // Check for buffer sync issues (Dark Green)
-    if (deltaMagnitude > MAX_DELTA_THRESHOLD) {
-        // Very large delta = potential buffer sync problem
-        setParticleColor(idx, DEBUG_COLOR_BUFFER_SYNC);
-    } else if (deltaMagnitude > DELTA_DEBUG_THRESHOLD) {
-        // Moderate delta = mark as sleeping/jitter zone
-        setParticleColor(idx, DEBUG_COLOR_SLEEPING);
+    // Hard clamp to prevent any residual energy spikes
+    const float MAX_TOTAL_DELTA = 0.1f;
+    if (length(delta) > MAX_TOTAL_DELTA) {
+        delta = normalize(delta) * MAX_TOTAL_DELTA;
     }
 
+    // 2. Update current position
     positions[idx].xyz += delta;
 
-    // Reset delta for next iteration/frame
+    // 3. Reset delta for next iteration
     deltaPositions[idx * 3 + 0] = 0;
     deltaPositions[idx * 3 + 1] = 0;
     deltaPositions[idx * 3 + 2] = 0;

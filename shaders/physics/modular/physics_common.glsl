@@ -165,7 +165,7 @@ layout(std430, binding = 12) buffer CollisionPairsSSBO {
 // EXTERNAL UNIFORMS (for terrain functions)
 // ============================================================================
 
-uniform sampler2D terrainHeightmap;
+layout(binding = 0) uniform sampler2D terrainHeightmap;
 
 // ============================================================================
 // DEBUG COLOR HELPER FUNCTIONS (after buffer declarations)
@@ -196,7 +196,7 @@ vec3 unpackParticleColor(uint idx) {
 const uint GRID_SIZE = 32768u;
 const uint GRID_MASK = GRID_SIZE - 1u;
 const float CELL_SIZE = 1.05f;
-const float EPSILON = 0.0001f;
+const float EPSILON = 0.00001f;
 const int MAX_ITERATIONS = MAX_ITERATIONS_RUNTIME;
 const int MAX_COLORS = 16;
 
@@ -216,27 +216,33 @@ layout(std140, binding = 0) uniform PhysicsParams {
 };
 
 layout(std140, binding = 1) uniform CollisionParams {
-    vec3 sphereCenter;
-    float sphereRadius;
-    float groundLevel;
-    float collisionMargin;
-    float dampingFactor;
-    float frictionFactor;
-    int collisionSubsteps;
-    float sphereStaticFriction;
-    float sphereDynamicFriction;
-    float sphereBounce;
-    float sphereGripFactor;
-    float staticFrictionThreshold;
-    float sleepingThreshold;
-    float sphereWrapFactor;
-    float terrainDamping;
-    float ccdSubsteps;
-    float conservativeFactor;
-    float maxPenetrationCorrection;
+    vec4 sphereCenter_Radius;    // Combined: xyz=center, w=radius
+    vec4 ground_margin_damping_friction; // x=groundLevel, y=collisionMargin, z=dampingFactor, w=frictionFactor
+    vec4 substeps_friction_bounce_grip; // x=collisionSubsteps(float), y=sphereStaticFriction, z=sphereDynamicFriction, w=sphereBounce
+    vec4 thresholds_wrap_damping; // x=sphereGripFactor, y=staticFrictionThreshold, z=sleepingThreshold, w=sphereWrapFactor
+    vec4 ccd_cons_maxpen_pad; // x=terrainDamping, y=ccdSubsteps, z=conservativeFactor, w=maxPenetrationCorrection
 };
 
-// Macros
+// Macros for cleaner code
+#define sphereCenter (sphereCenter_Radius.xyz)
+#define sphereRadius (sphereCenter_Radius.w)
+#define groundLevel (ground_margin_damping_friction.x)
+#define collisionMargin (ground_margin_damping_friction.y)
+#define dampingFactor (ground_margin_damping_friction.z)
+#define frictionFactor (ground_margin_damping_friction.w)
+#define substepsCount (substeps_friction_bounce_grip.x)
+#define sphereStaticFriction (substeps_friction_bounce_grip.y)
+#define sphereDynamicFriction (substeps_friction_bounce_grip.z)
+#define sphereBounce (substeps_friction_bounce_grip.w)
+#define sphereGripFactor (thresholds_wrap_damping.x)
+#define staticFrictionThreshold (thresholds_wrap_damping.y)
+#define sleepingThreshold (thresholds_wrap_damping.z)
+#define sphereWrapFactor (thresholds_wrap_damping.w)
+#define terrainDamping (ccd_cons_maxpen_pad.x)
+#define ccdSubsteps (ccd_cons_maxpen_pad.y)
+#define conservativeFactor (ccd_cons_maxpen_pad.z)
+#define maxPenetrationCorrection (ccd_cons_maxpen_pad.w)
+
 #define gravity (gravity_dt.xyz)
 #define deltaTime (gravity_dt.w)
 #define damping (params1.x)
@@ -266,7 +272,7 @@ float getTerrainHeight(float x, float z) {
     float u = (x + terrainSize.x * 0.5f) / terrainSize.x;
     float v = (z + terrainSize.y * 0.5f) / terrainSize.y;
     vec2 uv = clamp(vec2(u, v), 0.0, 1.0);
-    float h = textureLod(terrainHeightmap, uv, 0.0).r;
+    float h = textureLod(terrainHeightmap, uv, 0.0).r * terrainHeightScale;
     return max(groundLevel, h);
 }
 

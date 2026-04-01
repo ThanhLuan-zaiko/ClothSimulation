@@ -52,11 +52,11 @@ float getStiffnessForType(float type) {
     return stiffnesses[int(type)];
 }
 
-void applyGroundStabilization(inout vec3 pos, inout vec3 vel, float groundLevel, float margin) {
-    float heightAboveGround = pos.y - groundLevel;
+void applyGroundStabilization(inout vec3 pos, inout vec3 vel, float gLevel, float margin) {
+    float heightAboveGround = pos.y - gLevel;
     if (heightAboveGround < margin) {
-        float dampingFactor = GROUND_STABILIZER * smoothstep(0.0, margin, heightAboveGround);
-        vel *= dampingFactor;
+        float dFactor = GROUND_STABILIZER * smoothstep(0.0, margin, heightAboveGround);
+        vel *= dFactor;
     }
 }
 
@@ -92,6 +92,41 @@ void projectVelocityOrthogonal(inout vec3 vel, vec3 constraintDir, float inDampi
 }
 
 // ============================================================================
+// ENVIRONMENT COLLISIONS (Safe Projection)
+// ============================================================================
+
+void solveEnvironmentCollisions(inout vec3 pos) {
+    const float MAX_PUSH_PER_ITER = 0.05f; // Limit snap distance
+
+    // 1. Sphere Collision
+    if (sphereRadius > 0.0) {
+        float minDist = sphereRadius + collisionMargin;
+        vec3 toSphere = pos - sphereCenter;
+        float d2 = dot(toSphere, toSphere);
+        if (d2 < minDist * minDist) {
+            float d = sqrt(d2);
+            vec3 normal = (d > EPSILON) ? (toSphere / d) : vec3(0, 1, 0);
+            vec3 targetPos = sphereCenter + normal * minDist;
+            
+            // Move partially towards target to keep it stable
+            vec3 diff = targetPos - pos;
+            if (length(diff) > MAX_PUSH_PER_ITER) {
+                diff = normalize(diff) * MAX_PUSH_PER_ITER;
+            }
+            pos += diff;
+        }
+    }
+
+    // 2. Terrain Collision
+    float terrainH = getTerrainHeight(pos.x, pos.z);
+    float minY = terrainH + collisionMargin;
+    if (pos.y < minY) {
+        float diff = minY - pos.y;
+        pos.y += min(diff, MAX_PUSH_PER_ITER);
+    }
+}
+
+// ============================================================================
 // MAIN
 // ============================================================================
 
@@ -102,86 +137,31 @@ void main() {
     uint color = getParticleColor(globalIdx);
     if (color != uint(current_color)) return;
 
+    if (pinnedFlags[globalIdx] >= 0.5f) return;
+
     vec3 curPos = positions[globalIdx].xyz;
-    vec3 prevPos = prevPositions[globalIdx].xyz;
-    vec3 velocity = curPos - prevPos;
-    float localDebugState = DEBUG_STATE_NORMAL;
-    int constraintCount = 0;
-    int overstretchCount = 0;
-    int shearOverstretchCount = 0;
+    
+    // Environment projection
+    solveEnvironmentCollisions(curPos);
 
-    // Phase 1: Interactive forces
-    applyInteractiveForces(curPos, globalIdx);
-
-    if (pinnedFlags[globalIdx] >= 0.5f) {
-        positions[globalIdx].xyz = curPos;
-        return;
-    }
-
-    // Phase 2: Constraint solving
+    // Constraints
     ivec2 range = getAdjacencyRange(globalIdx);
-
     for (int i = 0; i < range.y; i++) {
         int cIdx = constraintIndices[range.x + i];
         ConstraintDataType c = constraints[cIdx];
-
         int otherIdx = (c.indices.x == int(globalIdx)) ? c.indices.y : c.indices.x;
         vec3 otherPos = positions[otherIdx].xyz;
 
         vec3 delta = otherPos - curPos;
         float d = length(delta);
-        if (d < 0.0001) continue;
-
-        constraintCount++;
-
-        // Calculate strain
-        float strain = (d - c.params.x) / c.params.x;
-        float constraintType = c.padding.x;
-
-        // Check for over-stretch (Blue)
-        if (abs(strain) > MAX_STRAIN_THRESHOLD) {
-            overstretchCount++;
-            if (constraintType == 1.0) {  // Shear constraint
-                shearOverstretchCount++;
-            }
+        if (d > EPSILON) {
+            float diff = (d - c.params.x) / d;
+            curPos += delta * diff * getStiffnessForType(c.padding.x) * 0.5;
         }
-
-        float diff = (d - c.params.x) / d;
-        float stiffness = getStiffnessForType(c.padding.x);
-
-        float groundFactor = smoothstep(0.0f, 0.15f, curPos.y);
-        float response = mix(POSITION_CORRECTION_FACTOR, 0.30f, groundFactor);
-
-        vec3 correction = delta * diff * stiffness * response;
-        curPos += correction;
-
-        // Phase 3: Velocity projection
-        vec3 constraintDir = delta / d;
-        vec3 otherVel = positions[otherIdx].xyz - prevPositions[otherIdx].xyz;
-        vec3 relVel = velocity - otherVel;
-
-        projectVelocityOrthogonal(velocity, constraintDir, VELOCITY_PROJECTION_DAMPING);
-        prevPos = curPos - velocity;
     }
 
-    // Phase 4: Set debug colors based on constraint analysis
-    if (shearOverstretchCount > 0) {
-        localDebugState = DEBUG_STATE_CONSTRAINT_SHEAR;
-        setParticleColor(globalIdx, DEBUG_COLOR_CONSTRAINT_SHEAR);
-    } else if (overstretchCount > 0) {
-        localDebugState = DEBUG_STATE_CONSTRAINT_STRETCH;
-        setParticleColor(globalIdx, DEBUG_COLOR_CONSTRAINT_STRETCH);
-    } else if (constraintCount < int(ITERATION_STARVATION_THRESHOLD) && range.y < int(ITERATION_STARVATION_THRESHOLD)) {
-        // Not enough constraints connected = potential starvation
-        localDebugState = DEBUG_STATE_CONSTRAINT_STARVATION;
-        setParticleColor(globalIdx, DEBUG_COLOR_CONSTRAINT_STARVATION);
-    } else if (localDebugState == DEBUG_STATE_NORMAL) {
-        setParticleColor(globalIdx, DEBUG_COLOR_NORMAL);
-    }
-
-    // Phase 5: Ground stabilization
-    applyGroundStabilization(curPos, velocity, groundLevel, 0.5f);
+    // Final environment guard
+    solveEnvironmentCollisions(curPos);
 
     positions[globalIdx].xyz = curPos;
-    prevPositions[globalIdx].xyz = prevPos;
 }
