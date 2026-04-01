@@ -35,6 +35,10 @@ void main() {
     // Update buffers
     prevPositions[globalIdx].xyz = curPos;  // prev = old current
     positions[globalIdx].xyz = nextPos;     // current = new position
+    
+    // Reset debug state to 0 (normal/white) at start of each frame
+    // Collision shaders will set appropriate debug state if needed
+    positions[globalIdx].w = 0.0;
 
     // NOTE: Spatial hash grid is currently unused in favor of Radix Sort Broadphase
 }

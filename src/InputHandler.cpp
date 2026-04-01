@@ -147,6 +147,47 @@ void HandleInput(AppState& state, float deltaTime) {
     }
     state.lastFKeyPressed = fDown;
     state.lastEKeyPressed = state.isInteracting;
+
+    // ========================================================================
+    // DEBUG VISUALIZATION CONTROLS
+    // ========================================================================
+    
+    // INSERT: Toggle debug visualization on/off (replaced F12 to avoid VS conflict)
+    bool insertDown = Input::IsKeyPressed(GLFW_KEY_INSERT);
+    if (insertDown && !state.lastInsertKeyPressed) {
+        state.physicsWorld.ToggleDebugMode();
+    }
+    state.lastInsertKeyPressed = insertDown;
+
+    // DELETE: Cycle through debug modes (replaced F11 to avoid VS conflict)
+    bool deleteDown = Input::IsKeyPressed(GLFW_KEY_DELETE);
+    if (deleteDown && !state.lastDeleteKeyPressed) {
+        state.physicsWorld.CycleDebugMode();
+    }
+    state.lastDeleteKeyPressed = deleteDown;
+
+    // F1-F10: Set specific debug modes
+    for (int i = 0; i < 10; ++i) {
+        int key = GLFW_KEY_F1 + i;
+        bool keyDown = Input::IsKeyPressed(key);
+        if (keyDown && !state.lastFKeysPressed[i]) {
+            SetSpecificDebugMode(state, i);
+        }
+        state.lastFKeysPressed[i] = keyDown;
+    }
+}
+
+void ToggleDebugMode(AppState& state) {
+    state.physicsWorld.ToggleDebugMode();
+}
+
+void CycleDebugMode(AppState& state) {
+    state.physicsWorld.CycleDebugMode();
+}
+
+void SetSpecificDebugMode(AppState& state, int mode) {
+    auto debugMode = static_cast<GPUPhysicsWorld::DebugMode>(mode);
+    state.physicsWorld.SetDebugMode(debugMode);
 }
 
 } // namespace cloth

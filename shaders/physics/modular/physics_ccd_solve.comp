@@ -131,7 +131,8 @@ float findTOI_Terrain(
 
 void applySphereCollisionResponse(
     uint particleIdx,
-    vec3 impactPos, vec3 normal, float toi)
+    vec3 impactPos, vec3 normal, float toi,
+    float debugState)
 {
     vec3 curPos = positions[particleIdx].xyz;
     vec3 prevPos = prevPositions[particleIdx].xyz;
@@ -161,12 +162,15 @@ void applySphereCollisionResponse(
 
         prevPositions[particleIdx].xyz = surfacePos - (newNormalVel + newTangentVel);
     }
+
+    // Set debug color based on state
+    setParticleColor(particleIdx, getDebugColor(debugState));
 }
 
 void applyTerrainCollisionResponse(
     uint particleIdx,
     vec3 impactPos, vec3 normal, float toi,
-    float terrainY)
+    float terrainY, float debugState)
 {
     vec3 curPos = positions[particleIdx].xyz;
     vec3 prevPos = prevPositions[particleIdx].xyz;
@@ -192,6 +196,9 @@ void applyTerrainCollisionResponse(
             prevPositions[particleIdx].xyz = positions[particleIdx].xyz - vel * 0.15f;
         }
     }
+
+    // Set debug color based on state
+    setParticleColor(particleIdx, getDebugColor(debugState));
 }
 
 // ============================================================================
@@ -205,7 +212,7 @@ void main() {
 
     vec3 curPos = positions[globalIdx].xyz;
     vec3 prevPos = prevPositions[globalIdx].xyz;
-    float debugState = 0.0f;
+    float debugState = DEBUG_STATE_NORMAL;
 
     // Phase 1: Sphere collision with CCD
     if (sphereRadius > 0.0) {
@@ -215,24 +222,60 @@ void main() {
             sphereCenter, sphereRadius, collisionMargin,
             normal, impactPos);
 
+        // Check if particle is in margin zone (Orange)
+        vec3 toSphere = curPos - sphereCenter;
+        float distToSphere = length(toSphere);
+        float marginDist = sphereRadius + collisionMargin;
+        
+        if (distToSphere < marginDist + 1.0f && distToSphere > marginDist) {
+            debugState = DEBUG_STATE_SPHERE_MARGIN;
+            setParticleColor(globalIdx, DEBUG_COLOR_SPHERE_MARGIN);
+        }
+
         if (toi < 1.0f) {
-            applySphereCollisionResponse(globalIdx, impactPos, normal, toi);
-            debugState = 1.0f;
+            // Check for CCD failure - penetration still occurred (Red)
+            vec3 surfacePos = sphereCenter + normal * marginDist;
+            float penetrationDepth = marginDist - length(curPos - sphereCenter);
+            
+            if (penetrationDepth > 0.1f) {
+                debugState = DEBUG_STATE_SPHERE_CCD_FAIL;
+            } else {
+                debugState = DEBUG_STATE_SPHERE_MARGIN;
+            }
+            
+            applySphereCollisionResponse(globalIdx, impactPos, normal, toi, debugState);
         }
     }
 
     // Phase 2: Terrain collision with CCD
-    if (debugState == 0.0f) {
+    if (debugState == DEBUG_STATE_NORMAL) {
         vec3 normal, impactPos;
-        float terrainY = max(groundLevel, groundLevel); // Use groundLevel directly
+        float terrainY = max(groundLevel, groundLevel);
         float toi = findTOI_Terrain(
             prevPos, curPos,
             terrainY, collisionMargin,
             normal, impactPos);
 
+        // Check if particle is in terrain margin zone (Lime)
+        float terrainHeight = getTerrainHeight(curPos.x, curPos.z);
+        float heightAboveTerrain = curPos.y - terrainHeight;
+        
+        if (heightAboveTerrain < collisionMargin + 1.0f && heightAboveTerrain > collisionMargin) {
+            debugState = DEBUG_STATE_TERRAIN_MARGIN;
+            setParticleColor(globalIdx, DEBUG_COLOR_TERRAIN_MARGIN);
+        }
+
         if (toi < 1.0f) {
-            applyTerrainCollisionResponse(globalIdx, impactPos, normal, toi, terrainY);
-            debugState = 2.0f;
+            // Check for terrain CCD failure (Yellow)
+            float penetrationDepth = terrainHeight + collisionMargin - curPos.y;
+            
+            if (penetrationDepth > 0.1f) {
+                debugState = DEBUG_STATE_TERRAIN_CCD_FAIL;
+            } else {
+                debugState = DEBUG_STATE_TERRAIN_MARGIN;
+            }
+            
+            applyTerrainCollisionResponse(globalIdx, impactPos, normal, toi, terrainY, debugState);
         }
     }
 
@@ -245,5 +288,10 @@ void main() {
         positions[globalIdx].xyz = prevPositions[globalIdx].xyz + finalVel;
     }
 
-    positions[globalIdx].w = debugState;
+    // Set final debug state if not already set
+    if (debugState == DEBUG_STATE_NORMAL) {
+        setParticleColor(globalIdx, DEBUG_COLOR_NORMAL);
+    }
+    
+    positions[globalIdx].w = float(debugState);
 }

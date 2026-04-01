@@ -115,6 +115,9 @@ struct AppState {
     bool isInteracting = false;
     glm::vec3 interactionWorldPos = glm::vec3(0.0f);
     bool lastNumberKeysPressed[9] = {false};
+    bool lastFKeysPressed[10] = {false};  // F1-F10 for debug modes
+    bool lastInsertKeyPressed = false;    // INSERT key for toggle debug
+    bool lastDeleteKeyPressed = false;    // DELETE key for cycle debug
 
     // Constructor
     AppState()

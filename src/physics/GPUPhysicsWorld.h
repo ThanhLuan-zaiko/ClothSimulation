@@ -131,6 +131,28 @@ public:
     bool IsInitialized() const { return m_Initialized; }
     unsigned int GetParticleBufferID() const { return m_PosBuffer; }
 
+    // Debug visualization methods
+    enum class DebugMode {
+        Off = 0,
+        ShowDebugColors = 1,
+        ShowSphereCollisions = 2,
+        ShowTerrainCollisions = 3,
+        ShowConstraintStress = 4,
+        ShowVelocity = 5,
+        ShowAll = 6
+    };
+
+    void SetDebugMode(DebugMode mode) { m_DebugMode = mode; }
+    DebugMode GetDebugMode() const { return m_DebugMode; }
+    void ToggleDebugMode() {
+        m_DebugMode = (m_DebugMode == DebugMode::Off) ? DebugMode::ShowDebugColors : DebugMode::Off;
+    }
+    void CycleDebugMode() {
+        int mode = static_cast<int>(m_DebugMode);
+        mode = (mode + 1) % 7;
+        m_DebugMode = static_cast<DebugMode>(mode);
+    }
+
 private:
     bool LoadComputeShaders();
     void UpdateUniforms(float deltaTime);
@@ -199,6 +221,7 @@ private:
     unsigned int m_ClothCount = 0;
     bool m_Initialized;
     std::vector<float> m_PinnedFlagsCPU;
+    DebugMode m_DebugMode = DebugMode::Off;  // Debug visualization mode
 };
 
 } // namespace cloth

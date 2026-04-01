@@ -21,6 +21,64 @@
 //   12 - CollisionPairs (uvec2)
 //   13 - Velocities (vec4) - optional
 
+// ============================================================================
+// DEBUG COLOR SYSTEM - 15 Colors for Bug Visualization
+// ============================================================================
+
+// Color constants for debug visualization
+#define DEBUG_COLOR_NORMAL          vec3(1.0, 1.0, 1.0)    // White - Normal, no issues
+#define DEBUG_COLOR_SPHERE_CCD_FAIL vec3(1.0, 0.0, 0.0)    // Red - Sphere CCD failure, penetration
+#define DEBUG_COLOR_SPHERE_MARGIN   vec3(1.0, 0.5, 0.0)    // Orange - Sphere margin zone entry
+#define DEBUG_COLOR_TERRAIN_CCD_FAIL vec3(1.0, 1.0, 0.0)   // Yellow - Terrain CCD failure
+#define DEBUG_COLOR_TERRAIN_MARGIN  vec3(0.0, 1.0, 0.0)    // Lime - Terrain margin zone entry
+#define DEBUG_COLOR_SELF_COLLISION  vec3(0.0, 1.0, 1.0)    // Cyan - Self-collision failure
+#define DEBUG_COLOR_CONSTRAINT_STRETCH vec3(0.0, 0.0, 1.0) // Blue - Constraint over-stretch
+#define DEBUG_COLOR_CONSTRAINT_SHEAR vec3(1.0, 0.0, 1.0)   // Magenta - Shear constraint failure
+#define DEBUG_COLOR_BENDING_LIMIT   vec3(0.5, 0.0, 0.5)    // Purple - Bending limit exceeded
+#define DEBUG_COLOR_STRAIN_RATE     vec3(1.0, 0.5, 0.5)    // Pink - Strain rate violation
+#define DEBUG_COLOR_VELOCITY_EXPLOSION vec3(0.6, 0.3, 0.0) // Brown - Velocity explosion
+#define DEBUG_COLOR_PENETRATION     vec3(0.5, 0.0, 0.0)    // Dark Red - Deep penetration
+#define DEBUG_COLOR_BUFFER_SYNC     vec3(0.0, 0.5, 0.0)    // Dark Green - Buffer sync issue
+#define DEBUG_COLOR_CONSTRAINT_STARVATION vec3(0.0, 0.0, 0.5) // Dark Blue - Constraint starvation
+#define DEBUG_COLOR_SLEEPING        vec3(0.5, 0.5, 0.5)    // Gray - Sleeping/jitter zone
+
+// Debug state values (stored in position.w or particleData)
+#define DEBUG_STATE_NORMAL              0.0
+#define DEBUG_STATE_SPHERE_CCD_FAIL     1.0
+#define DEBUG_STATE_SPHERE_MARGIN       2.0
+#define DEBUG_STATE_TERRAIN_CCD_FAIL    3.0
+#define DEBUG_STATE_TERRAIN_MARGIN      4.0
+#define DEBUG_STATE_SELF_COLLISION      5.0
+#define DEBUG_STATE_CONSTRAINT_STRETCH  6.0
+#define DEBUG_STATE_CONSTRAINT_SHEAR    7.0
+#define DEBUG_STATE_BENDING_LIMIT       8.0
+#define DEBUG_STATE_STRAIN_RATE         9.0
+#define DEBUG_STATE_VELOCITY_EXPLOSION  10.0
+#define DEBUG_STATE_PENETRATION         11.0
+#define DEBUG_STATE_BUFFER_SYNC         12.0
+#define DEBUG_STATE_CONSTRAINT_STARVATION 13.0
+#define DEBUG_STATE_SLEEPING            14.0
+
+// Helper function to get color from debug state
+vec3 getDebugColor(float state) {
+    if (state == DEBUG_STATE_NORMAL) return DEBUG_COLOR_NORMAL;
+    if (state == DEBUG_STATE_SPHERE_CCD_FAIL) return DEBUG_COLOR_SPHERE_CCD_FAIL;
+    if (state == DEBUG_STATE_SPHERE_MARGIN) return DEBUG_COLOR_SPHERE_MARGIN;
+    if (state == DEBUG_STATE_TERRAIN_CCD_FAIL) return DEBUG_COLOR_TERRAIN_CCD_FAIL;
+    if (state == DEBUG_STATE_TERRAIN_MARGIN) return DEBUG_COLOR_TERRAIN_MARGIN;
+    if (state == DEBUG_STATE_SELF_COLLISION) return DEBUG_COLOR_SELF_COLLISION;
+    if (state == DEBUG_STATE_CONSTRAINT_STRETCH) return DEBUG_COLOR_CONSTRAINT_STRETCH;
+    if (state == DEBUG_STATE_CONSTRAINT_SHEAR) return DEBUG_COLOR_CONSTRAINT_SHEAR;
+    if (state == DEBUG_STATE_BENDING_LIMIT) return DEBUG_COLOR_BENDING_LIMIT;
+    if (state == DEBUG_STATE_STRAIN_RATE) return DEBUG_COLOR_STRAIN_RATE;
+    if (state == DEBUG_STATE_VELOCITY_EXPLOSION) return DEBUG_COLOR_VELOCITY_EXPLOSION;
+    if (state == DEBUG_STATE_PENETRATION) return DEBUG_COLOR_PENETRATION;
+    if (state == DEBUG_STATE_BUFFER_SYNC) return DEBUG_COLOR_BUFFER_SYNC;
+    if (state == DEBUG_STATE_CONSTRAINT_STARVATION) return DEBUG_COLOR_CONSTRAINT_STARVATION;
+    if (state == DEBUG_STATE_SLEEPING) return DEBUG_COLOR_SLEEPING;
+    return DEBUG_COLOR_NORMAL;
+}
+
 // Particle positions (w = cloth ID for debugging)
 layout(std430, binding = 0) buffer PositionBufferSSBO {
     vec4 positions[];
@@ -104,6 +162,34 @@ layout(std430, binding = 12) buffer CollisionPairsSSBO {
 };
 
 // ============================================================================
+// EXTERNAL UNIFORMS (for terrain functions)
+// ============================================================================
+
+uniform sampler2D terrainHeightmap;
+
+// ============================================================================
+// DEBUG COLOR HELPER FUNCTIONS (after buffer declarations)
+// ============================================================================
+
+// Helper function to set particle color in particleData buffer
+void setParticleColor(uint idx, vec3 color) {
+    // Pack RGB (0-1) into uint: R in bits 0-9, G in bits 10-19, B in bits 20-29
+    uint r = uint(clamp(color.r, 0.0, 1.0) * 1023.0);
+    uint g = uint(clamp(color.g, 0.0, 1.0) * 1023.0);
+    uint b = uint(clamp(color.b, 0.0, 1.0) * 1023.0);
+    particleData[idx] = r | (g << 10) | (b << 20);
+}
+
+// Helper function to unpack color from particleData
+vec3 unpackParticleColor(uint idx) {
+    uint colorData = particleData[idx];
+    uint r = colorData & 0x3FFu;
+    uint g = (colorData >> 10) & 0x3FFu;
+    uint b = (colorData >> 20) & 0x3FFu;
+    return vec3(r, g, b) / 1023.0;
+}
+
+// ============================================================================
 // CONSTANTS
 // ============================================================================
 
@@ -170,6 +256,28 @@ layout(std140, binding = 1) uniform CollisionParams {
 #define interactionPos (interaction.xyz)
 #define interactionActive (interaction.w > 0.5)
 #define u_Time (time_data.x)
+
+// ============================================================================
+// TERRAIN HELPER FUNCTIONS (must be after UBO and macros)
+// ============================================================================
+
+float getTerrainHeight(float x, float z) {
+    if (terrainSize.x <= 0.0f || terrainSize.y <= 0.0f) return groundLevel;
+    float u = (x + terrainSize.x * 0.5f) / terrainSize.x;
+    float v = (z + terrainSize.y * 0.5f) / terrainSize.y;
+    vec2 uv = clamp(vec2(u, v), 0.0, 1.0);
+    float h = textureLod(terrainHeightmap, uv, 0.0).r;
+    return max(groundLevel, h);
+}
+
+vec3 getTerrainNormal(float x, float z) {
+    float step = 0.15;
+    float hL = getTerrainHeight(x - step, z);
+    float hR = getTerrainHeight(x + step, z);
+    float hD = getTerrainHeight(x, z - step);
+    float hU = getTerrainHeight(x, z + step);
+    return normalize(vec3(hL - hR, 2.0 * step, hD - hU));
+}
 
 // ============================================================================
 // HELPER FUNCTIONS

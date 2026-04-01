@@ -27,6 +27,10 @@ const float IMPLICIT_DAMPING = 0.98;
 const float STRAIN_LIMIT_EPSILON = 0.01;
 const float MAX_STRAIN_RATE = 0.1;
 
+// Bending debug thresholds
+const float MAX_BENDING_ANGLE = 3.14159 * 0.8;  // 144 degrees max bending (Purple)
+const float BENDING_STRAIN_THRESHOLD = 0.15;    // 15% strain on bending edges
+
 // ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
@@ -166,48 +170,62 @@ void main() {
     float restAngle = bc.params.x;
     float angleError = currentAngle - restAngle;
 
-    if (abs(angleError) < 0.001) return;
+    // Check for excessive bending (Purple)
+    float absAngleError = abs(angleError);
+    bool bendingExceeded = absAngleError > MAX_BENDING_ANGLE;
+
+    if (absAngleError < 0.001) return;
 
     // Phase 2: Calculate gradients
     vec3 grad3, grad4;
     calculateBendingGradients(x1, x2, x3, x4, grad3, grad4);
-    
+
     float grad3Len = length(grad3);
     float grad4Len = length(grad4);
-    
+
     if (grad3Len < EPSILON && grad4Len < EPSILON) return;
 
     // Phase 3: Implicit integration
     float stiffness = bc.params.y * bc.padding.x;
     stiffness = min(stiffness * 0.08, 0.5);
-    
+
     float w3 = (pinnedFlags[p3] < 0.5) ? 1.0 : 0.0;
     float w4 = (pinnedFlags[p4] < 0.5) ? 1.0 : 0.0;
     float sumW = w3 + w4;
-    
+
     if (sumW < EPSILON) return;
 
     float lambda = angleError * stiffness / sumW;
-    
+
     vec3 vel3 = positions[p3].xyz - prevPositions[p3].xyz;
     vec3 vel4 = positions[p4].xyz - prevPositions[p4].xyz;
-    
+
     if (w3 > 0.5) {
         vec3 delta3 = -grad3 * lambda * w3;
         delta3 = applyImplicitDamping(delta3, vel3);
         atomicAddVec3(p3, delta3);
+        
+        // Set bending debug color (Purple)
+        if (bendingExceeded) {
+            setParticleColor(uint(p3), DEBUG_COLOR_BENDING_LIMIT);
+        }
     }
-    
+
     if (w4 > 0.5) {
         vec3 delta4 = -grad4 * lambda * w4;
         delta4 = applyImplicitDamping(delta4, vel4);
         atomicAddVec3(p4, delta4);
+        
+        // Set bending debug color (Purple)
+        if (bendingExceeded) {
+            setParticleColor(uint(p4), DEBUG_COLOR_BENDING_LIMIT);
+        }
     }
 
     // Phase 4: Strain limiting on adjacent edges
     float edgeRestLength = elen;
     applyStrainLimiting(uint(p1), uint(p2), edgeRestLength, MAX_STRAIN_RATE);
-    
+
     float restLength3 = length(x3 - x1);
     float restLength4 = length(x4 - x2);
     applyStrainLimiting(uint(p1), uint(p3), restLength3, MAX_STRAIN_RATE);

@@ -25,6 +25,17 @@ void atomicAddVec3(uint baseIdx, vec3 delta) {
     atomicAdd(deltaPositions[baseIdx * 3 + 2], int(delta.z * scale));
 }
 
+// Helper to set particle color for strain debug
+void setStrainDebugColor(uint idx, float strain, float strainRate) {
+    // High strain rate = Pink
+    if (abs(strainRate) > MAX_STRAIN_RATE * 0.5) {
+        setParticleColor(idx, DEBUG_COLOR_STRAIN_RATE);
+    } else if (abs(strain) > MAX_STRAIN_RATE * 2.0) {
+        // High strain = Blue (constraint stretch)
+        setParticleColor(idx, DEBUG_COLOR_CONSTRAINT_STRETCH);
+    }
+}
+
 // ============================================================================
 // STRAIN CALCULATION
 // ============================================================================
@@ -71,15 +82,15 @@ void applyStrainLimiting(uint idx) {
 
     float strain = calculateGreenLagrangeStrain(cRestLength, currentLength);
     float strainRate = calculateStrainRate(prevLength, currentLength, deltaTime);
-    
+
     float maxStrain = MAX_STRAIN_RATE;
     float maxStrainRate = MAX_STRAIN_RATE * 2.0;
-    
+
     if (constraintType == 0.0) {
         maxStrain = MAX_STRAIN_RATE * 0.5;
         maxStrainRate = MAX_STRAIN_RATE;
     }
-    
+
     bool needsLimiting = false;
     float targetLength = currentLength;
 
@@ -90,38 +101,44 @@ void applyStrainLimiting(uint idx) {
         targetLength = cRestLength * (1.0 - maxStrain);
         needsLimiting = true;
     }
-    
+
     if (abs(strainRate) > maxStrainRate) {
         float rateCorrection = sign(strainRate) * maxStrainRate * deltaTime;
         targetLength = prevLength + rateCorrection;
         needsLimiting = true;
     }
-    
+
+    // Set debug colors for strain violations
+    if (abs(strainRate) > MAX_STRAIN_RATE * 0.5) {
+        setStrainDebugColor(uint(p1), strain, strainRate);
+        setStrainDebugColor(uint(p2), strain, strainRate);
+    }
+
     if (!needsLimiting) return;
-    
+
     float correction = (targetLength - currentLength) / currentLength;
     correction *= STRAIN_LIMITING_STIFFNESS;
-    
+
     vec3 correctionVec = delta * correction * 0.5;
-    
+
     if (pinnedFlags[p1] < 0.5) {
         atomicAddVec3(p1, correctionVec);
     }
     if (pinnedFlags[p2] < 0.5) {
         atomicAddVec3(p2, -correctionVec);
     }
-    
+
     // Velocity damping
     vec3 vel1 = pos1 - prevPos1;
     vec3 vel2 = pos2 - prevPos2;
-    
+
     vec3 constraintDir = delta / currentLength;
     float vel1Proj = dot(vel1, constraintDir);
     float vel2Proj = dot(vel2, constraintDir);
-    
+
     float relVel = vel1Proj - vel2Proj;
     float dampingCorrection = relVel * (1.0 - VELOCITY_DAMPING) * 0.5;
-    
+
     if (pinnedFlags[p1] < 0.5) {
         prevPositions[p1].xyz -= constraintDir * dampingCorrection;
     }

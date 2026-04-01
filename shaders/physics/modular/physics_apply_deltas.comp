@@ -6,18 +6,41 @@ layout(local_size_x = 256) in;
 
 #include "physics_common.glsl"
 
+// ============================================================================
+// CONFIGURATION
+// ============================================================================
+
+const float MAX_DELTA_THRESHOLD = 0.5f;  // Large delta = buffer sync issue
+const float DELTA_DEBUG_THRESHOLD = 0.1f; // Moderate delta = mark for debugging
+
+// ============================================================================
+// MAIN
+// ============================================================================
+
 void main() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= uint(numParticles)) return;
 
     // Apply accumulated deltas (Fixed-point 10000.0 scale)
     const float invScale = 1.0 / 10000.0;
-    
+
     float dx = float(deltaPositions[idx * 3 + 0]) * invScale;
     float dy = float(deltaPositions[idx * 3 + 1]) * invScale;
     float dz = float(deltaPositions[idx * 3 + 2]) * invScale;
-    
-    positions[idx].xyz += vec3(dx, dy, dz);
+
+    vec3 delta = vec3(dx, dy, dz);
+    float deltaMagnitude = length(delta);
+
+    // Check for buffer sync issues (Dark Green)
+    if (deltaMagnitude > MAX_DELTA_THRESHOLD) {
+        // Very large delta = potential buffer sync problem
+        setParticleColor(idx, DEBUG_COLOR_BUFFER_SYNC);
+    } else if (deltaMagnitude > DELTA_DEBUG_THRESHOLD) {
+        // Moderate delta = mark as sleeping/jitter zone
+        setParticleColor(idx, DEBUG_COLOR_SLEEPING);
+    }
+
+    positions[idx].xyz += delta;
 
     // Reset delta for next iteration/frame
     deltaPositions[idx * 3 + 0] = 0;

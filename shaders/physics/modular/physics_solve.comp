@@ -33,6 +33,11 @@ const float POSITION_CORRECTION_FACTOR = 0.25;
 const float VELOCITY_PROJECTION_DAMPING = 0.99;
 const float GROUND_STABILIZER = 0.95;
 
+// Debug thresholds
+const float MAX_STRAIN_THRESHOLD = 0.05;       // 5% strain = Blue
+const float SHEAR_STRAIN_THRESHOLD = 0.10;     // 10% shear strain = Magenta
+const float ITERATION_STARVATION_THRESHOLD = 3.0f; // Min iterations needed
+
 // ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
@@ -93,13 +98,17 @@ void projectVelocityOrthogonal(inout vec3 vel, vec3 constraintDir, float inDampi
 void main() {
     uint globalIdx = gl_GlobalInvocationID.x;
     if (globalIdx >= uint(numParticles)) return;
-    
+
     uint color = getParticleColor(globalIdx);
     if (color != uint(current_color)) return;
 
     vec3 curPos = positions[globalIdx].xyz;
     vec3 prevPos = prevPositions[globalIdx].xyz;
     vec3 velocity = curPos - prevPos;
+    float localDebugState = DEBUG_STATE_NORMAL;
+    int constraintCount = 0;
+    int overstretchCount = 0;
+    int shearOverstretchCount = 0;
 
     // Phase 1: Interactive forces
     applyInteractiveForces(curPos, globalIdx);
@@ -123,6 +132,20 @@ void main() {
         float d = length(delta);
         if (d < 0.0001) continue;
 
+        constraintCount++;
+
+        // Calculate strain
+        float strain = (d - c.params.x) / c.params.x;
+        float constraintType = c.padding.x;
+
+        // Check for over-stretch (Blue)
+        if (abs(strain) > MAX_STRAIN_THRESHOLD) {
+            overstretchCount++;
+            if (constraintType == 1.0) {  // Shear constraint
+                shearOverstretchCount++;
+            }
+        }
+
         float diff = (d - c.params.x) / d;
         float stiffness = getStiffnessForType(c.padding.x);
 
@@ -136,12 +159,27 @@ void main() {
         vec3 constraintDir = delta / d;
         vec3 otherVel = positions[otherIdx].xyz - prevPositions[otherIdx].xyz;
         vec3 relVel = velocity - otherVel;
-        
+
         projectVelocityOrthogonal(velocity, constraintDir, VELOCITY_PROJECTION_DAMPING);
         prevPos = curPos - velocity;
     }
 
-    // Phase 4: Ground stabilization
+    // Phase 4: Set debug colors based on constraint analysis
+    if (shearOverstretchCount > 0) {
+        localDebugState = DEBUG_STATE_CONSTRAINT_SHEAR;
+        setParticleColor(globalIdx, DEBUG_COLOR_CONSTRAINT_SHEAR);
+    } else if (overstretchCount > 0) {
+        localDebugState = DEBUG_STATE_CONSTRAINT_STRETCH;
+        setParticleColor(globalIdx, DEBUG_COLOR_CONSTRAINT_STRETCH);
+    } else if (constraintCount < int(ITERATION_STARVATION_THRESHOLD) && range.y < int(ITERATION_STARVATION_THRESHOLD)) {
+        // Not enough constraints connected = potential starvation
+        localDebugState = DEBUG_STATE_CONSTRAINT_STARVATION;
+        setParticleColor(globalIdx, DEBUG_COLOR_CONSTRAINT_STARVATION);
+    } else if (localDebugState == DEBUG_STATE_NORMAL) {
+        setParticleColor(globalIdx, DEBUG_COLOR_NORMAL);
+    }
+
+    // Phase 5: Ground stabilization
     applyGroundStabilization(curPos, velocity, groundLevel, 0.5f);
 
     positions[globalIdx].xyz = curPos;

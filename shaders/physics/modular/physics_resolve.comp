@@ -132,26 +132,32 @@ void resolveCollision(
     float groundFactorA, float groundFactorB)
 {
     if (penetration <= 0.0) return;
-    
+
     vec3 delta = closestA - closestB;
     float dist = length(delta);
     if (dist < EPSILON) return;
-    
+
     vec3 normal = delta / dist;
-    float settlingFactor = min(groundFactorA, groundFactorB);
+    float settlingFactor = mix(groundFactorA, groundFactorB, 0.5);
     float correctionFactor = mix(0.15f, 0.5f, settlingFactor);
     correctionFactor = min(correctionFactor, MAX_CORRECTION_FACTOR);
-    
+
     float softenedPenetration = penetration * correctionFactor;
     vec3 correction = normal * softenedPenetration;
-    
+
     atomicAdd(deltaPositions[idxA * 3 + 0], int(correction.x * 10000.0));
     atomicAdd(deltaPositions[idxA * 3 + 1], int(correction.y * 10000.0));
     atomicAdd(deltaPositions[idxA * 3 + 2], int(correction.z * 10000.0));
-    
+
     atomicAdd(deltaPositions[idxB * 3 + 0], int(-correction.x * 10000.0));
     atomicAdd(deltaPositions[idxB * 3 + 1], int(-correction.y * 10000.0));
     atomicAdd(deltaPositions[idxB * 3 + 2], int(-correction.z * 10000.0));
+
+    // Set self-collision debug color (Cyan) for significant penetrations
+    if (penetration > selfCollisionRadius * 0.3f) {
+        setParticleColor(idxA, DEBUG_COLOR_SELF_COLLISION);
+        setParticleColor(idxB, DEBUG_COLOR_SELF_COLLISION);
+    }
 }
 
 // ============================================================================
@@ -162,7 +168,7 @@ void main() {
     uint idx = gl_GlobalInvocationID.x;
     // Use pairCount macro from sortTemp buffer
     uint pairCount = sortTemp[numParticles + 8192];
-    
+
     if (idx >= pairCount) return;
 
     uvec2 pair = collisionPairs[idx];
@@ -187,33 +193,39 @@ void main() {
     // Phase 1: Analytic CCD
     float hitTime;
     vec3 closestA, closestB;
-    
+
     bool ccdHit = ccdParticleCollision(
         curPosA, prevPosA,
         curPosB, prevPosB,
         selfCollisionRadius,
         hitTime, closestA, closestB);
-    
+
     // Phase 2: Multi-sample verification
     float multiSampleTime;
     float multiSampleDist = multiSampleCCD(
         curPosA, prevPosA,
         curPosB, prevPosB,
         multiSampleTime);
-    
+
     float effectiveDist = min(sqrt(dot(closestA - closestB, closestA - closestB)), multiSampleDist);
-    
+
     if (effectiveDist >= selfCollisionRadius) return;
-    
+
     // Phase 3: Calculate penetration
     float penetration = selfCollisionRadius - effectiveDist;
-    
+
+    // Check for self-collision failure (Cyan) - particles too close
+    if (effectiveDist < selfCollisionRadius * 0.5f) {
+        setParticleColor(i, DEBUG_COLOR_SELF_COLLISION);
+        setParticleColor(j, DEBUG_COLOR_SELF_COLLISION);
+    }
+
     // Ground settling factors
     float groundLevelA = curPosA.y - (selfCollisionRadius * 0.5f);
     float groundLevelB = curPosB.y - (selfCollisionRadius * 0.5f);
     float settlingA = smoothstep(0.0f, 0.2f, groundLevelA);
     float settlingB = smoothstep(0.0f, 0.2f, groundLevelB);
-    
+
     // Phase 4: Apply correction
     resolveCollision(i, j, closestA, closestB, penetration, hitTime, settlingA, settlingB);
 }

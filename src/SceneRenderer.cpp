@@ -313,6 +313,11 @@ void Render(AppState& state, const Application& app) {
         state.clothShader.SetInt("u_Interactive", state.isInteracting ? 1 : 0);
         state.clothShader.SetVec3("u_Color", glm::vec3(1.0f, 1.0f, 1.0f));
 
+        // Debug visualization mode
+        GPUPhysicsWorld::DebugMode debugMode = state.physicsWorld.GetDebugMode();
+        int debugModeInt = (debugMode == GPUPhysicsWorld::DebugMode::Off) ? 0 : 1;
+        state.clothShader.SetInt("u_DebugMode", debugModeInt);
+
         // Bind SSAO texture if enabled
         if (state.useSSAO && state.ssaoBuffer) {
             glActiveTexture(GL_TEXTURE1);

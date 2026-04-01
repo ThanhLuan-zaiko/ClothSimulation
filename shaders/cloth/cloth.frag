@@ -24,6 +24,51 @@ uniform sampler2D u_SSAOTexture;
 uniform vec2 u_ScreenSize;
 uniform int u_UseSSAO;
 
+// Debug visualization uniforms
+uniform int u_DebugMode;  // 0 = off, 1 = show debug colors
+
+// ============================================================================
+// DEBUG COLOR SYSTEM - Must match physics_common.glsl
+// ============================================================================
+
+#define DEBUG_STATE_NORMAL              0.0
+#define DEBUG_STATE_SPHERE_CCD_FAIL     1.0
+#define DEBUG_STATE_SPHERE_MARGIN       2.0
+#define DEBUG_STATE_TERRAIN_CCD_FAIL    3.0
+#define DEBUG_STATE_TERRAIN_MARGIN      4.0
+#define DEBUG_STATE_SELF_COLLISION      5.0
+#define DEBUG_STATE_CONSTRAINT_STRETCH  6.0
+#define DEBUG_STATE_CONSTRAINT_SHEAR    7.0
+#define DEBUG_STATE_BENDING_LIMIT       8.0
+#define DEBUG_STATE_STRAIN_RATE         9.0
+#define DEBUG_STATE_VELOCITY_EXPLOSION  10.0
+#define DEBUG_STATE_PENETRATION         11.0
+#define DEBUG_STATE_BUFFER_SYNC         12.0
+#define DEBUG_STATE_CONSTRAINT_STARVATION 13.0
+#define DEBUG_STATE_SLEEPING            14.0
+
+vec3 getDebugColor(float state) {
+    // Use epsilon comparison for floats
+    const float epsilon = 0.1;
+    
+    if (abs(state - 0.0) < epsilon) return vec3(1.0, 1.0, 1.0);    // White - Normal
+    if (abs(state - 1.0) < epsilon) return vec3(1.0, 0.0, 0.0);    // Red - Sphere CCD failure
+    if (abs(state - 2.0) < epsilon) return vec3(1.0, 0.5, 0.0);    // Orange - Sphere margin
+    if (abs(state - 3.0) < epsilon) return vec3(1.0, 1.0, 0.0);    // Yellow - Terrain CCD failure
+    if (abs(state - 4.0) < epsilon) return vec3(0.0, 1.0, 0.0);    // Lime - Terrain margin
+    if (abs(state - 5.0) < epsilon) return vec3(0.0, 1.0, 1.0);    // Cyan - Self-collision
+    if (abs(state - 6.0) < epsilon) return vec3(0.0, 0.0, 1.0);    // Blue - Constraint stretch
+    if (abs(state - 7.0) < epsilon) return vec3(1.0, 0.0, 1.0);    // Magenta - Shear constraint
+    if (abs(state - 8.0) < epsilon) return vec3(0.5, 0.0, 0.5);    // Purple - Bending limit
+    if (abs(state - 9.0) < epsilon) return vec3(1.0, 0.5, 0.5);    // Pink - Strain rate
+    if (abs(state - 10.0) < epsilon) return vec3(0.6, 0.3, 0.0);   // Brown - Velocity explosion
+    if (abs(state - 11.0) < epsilon) return vec3(0.5, 0.0, 0.0);   // Dark Red - Penetration
+    if (abs(state - 12.0) < epsilon) return vec3(0.0, 0.5, 0.0);   // Dark Green - Buffer sync
+    if (abs(state - 13.0) < epsilon) return vec3(0.0, 0.0, 0.5);   // Dark Blue - Constraint starvation
+    if (abs(state - 14.0) < epsilon) return vec3(0.5, 0.5, 0.5);   // Gray - Sleeping
+    return vec3(1.0, 1.0, 1.0);  // Default to white
+}
+
 void main() {
     // ...
 
@@ -33,38 +78,45 @@ void main() {
         return;
     }
 
+    // Debug visualization mode - show physics debug colors
+    if (u_DebugMode == 1) {
+        vec3 debugColor = getDebugColor(v_State);
+        out_Color = vec4(debugColor, 1.0);
+        return;
+    }
+
     // DYNAMIC NORMAL CALCULATION
     vec3 dX = dFdx(v_FragPos);
     vec3 dY = dFdy(v_FragPos);
     vec3 norm = normalize(cross(dX, dY));
-    
+
     vec3 viewDir = normalize(u_ViewPos - v_FragPos);
     if (dot(norm, viewDir) < 0.0) {
         norm = -norm;
     }
 
     vec3 lightDir = normalize(u_LightPos - v_FragPos);
-    
+
     // ============================================================
     // OREN-NAYAR DIFFUSE MODEL
     // ============================================================
     float dotNL = max(dot(norm, lightDir), 0.0);
     float dotNV = max(dot(norm, viewDir), 0.0);
-    
+
     float sigma2 = u_Roughness * u_Roughness;
     float A = 1.0 - 0.5 * (sigma2 / (sigma2 + 0.33));
     float B = 0.45 * (sigma2 / (sigma2 + 0.09));
-    
+
     float theta_i = acos(dotNL);
     float theta_r = acos(dotNV);
     float alpha = max(theta_i, theta_r);
     float beta = min(theta_i, theta_r);
-    
+
     // Azimuthal difference approximation
     vec3 lightProj = normalize(lightDir - norm * dotNL);
     vec3 viewProj = normalize(viewDir - norm * dotNV);
     float cos_phi_diff = max(0.0, dot(lightProj, viewProj));
-    
+
     float oren_nayar = dotNL * (A + B * cos_phi_diff * sin(alpha) * tan(beta));
     vec3 diffuse = oren_nayar * vec3(1.0, 0.98, 0.95);
 
@@ -75,12 +127,12 @@ void main() {
     vec2 dUVx = dFdx(v_TexCoord);
     vec2 dUVy = dFdy(v_TexCoord);
     vec3 tangent = normalize(dX * dUVy.y - dY * dUVx.y);
-    
+
     float dotLT = dot(tangent, lightDir);
     float dotVT = dot(tangent, viewDir);
     float sinLT = sqrt(max(0.0, 1.0 - dotLT * dotLT));
     float sinVT = sqrt(max(0.0, 1.0 - dotVT * dotVT));
-    
+
     float spec_aniso = pow(max(0.0, sinLT * sinVT - dotLT * dotVT), 32.0);
     vec3 specular = spec_aniso * vec3(1.0) * u_Anisotropy;
 
@@ -108,11 +160,11 @@ void main() {
         float pulse = 0.5 + 0.5 * sin(u_Time * 6.0);
         float fresnel = 1.0 - max(dot(norm, viewDir), 0.0);
         fresnel = pow(fresnel, 4.0); // Sharper edge
-        
+
         vec3 greenGlow = vec3(0.0, 1.0, 0.0);
         float intensity = 0.4 + 0.6 * pulse;
         result = mix(result, greenGlow, fresnel * intensity);
-        
+
         // Add a slight emissive green tint to everything to show mode is active
         result += vec3(0.0, 0.03 * pulse, 0.0);
     }
