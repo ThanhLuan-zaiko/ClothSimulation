@@ -138,7 +138,7 @@ float findTOI_Terrain(
 // ============================================================================
 
 void atomicAddVec3(uint baseIdx, vec3 delta) {
-    const float scale = 10000.0;
+    const float scale = 1000000.0; // Increased scale for micro-precision
     atomicAdd(deltaPositions[baseIdx * 3 + 0], int(delta.x * scale));
     atomicAdd(deltaPositions[baseIdx * 3 + 1], int(delta.y * scale));
     atomicAdd(deltaPositions[baseIdx * 3 + 2], int(delta.z * scale));
@@ -155,34 +155,20 @@ void applySphereCollisionResponse(
 {
     vec3 cPos = positions[pIdx].xyz;
     vec3 pPos = prevPositions[pIdx].xyz;
-    vec3 v = cPos - pPos;
-
     float mDist = sphereRadius + collisionMargin;
     vec3 sPos = sphereCenter + norm * mDist;
 
-    // Displacement correction
-    vec3 corr = sPos - cPos;
+    // Displacement correction (PBD style)
+    vec3 corr = (sPos - cPos) * 0.95; 
     atomicAddVec3(pIdx, corr);
 
-    // Update prevPos to maintain correct velocity after collision
-    float nVel = dot(v, norm);
-    vec3 tVel = v - nVel * norm;
-
-    float cAngle = dot(norm, vec3(0.0, 1.0, 0.0));
-    bool onTop = cAngle > 0.6f;
-
-    if (onTop && length(v) < staticFrictionThreshold) {
-        prevPositions[pIdx].xyz = sPos - tVel * 0.15f;
-    } else {
-        float bnc = sphereBounce;
-        if (abs(nVel) < sleepingThreshold) {
-            bnc = 0.0f;
-        }
-
-        vec3 newNVel = -nVel * bnc * norm;
-        vec3 newTVel = tVel * sphereDynamicFriction;
-
-        prevPositions[pIdx].xyz = sPos - (newNVel + newTVel);
+    // CRITICAL: Damp the velocity direction that points into the sphere
+    // We move prevPosition closer to current position to reduce Verlet velocity
+    vec3 vel = cPos - pPos;
+    float vDotN = dot(vel, norm);
+    if (vDotN < 0.0) {
+        // Remove 90% of the velocity component towards the sphere
+        prevPositions[pIdx].xyz += norm * (vDotN * 0.9);
     }
 
     setParticleColor(pIdx, getDebugColor(dState));
@@ -195,34 +181,17 @@ void applyTerrainCollisionResponse(
 {
     vec3 cPos = positions[pIdx].xyz;
     vec3 pPos = prevPositions[pIdx].xyz;
-    vec3 v = cPos - pPos;
-
     float tY = getTerrainHeight(cPos.x, cPos.z) + collisionMargin;
     vec3 sPos = cPos;
     sPos.y = tY;
 
-    // Displacement correction
-    vec3 corr = sPos - cPos;
+    vec3 corr = (sPos - cPos) * 0.95;
     atomicAddVec3(pIdx, corr);
 
-    // Velocity projection
-    float nVel = dot(v, norm);
-    vec3 tVel = v - nVel * norm;
-
-    float sThresh = sleepingThreshold * 3.0f;
-
-    if (length(v) < sThresh) {
-        prevPositions[pIdx].xyz = sPos - tVel * 0.2f;
-    } else {
-        float nDamp = 0.15f;
-        float tFric = 0.35f;
-
-        if (nVel < 0.0) {
-            vec3 newV = tVel * tFric - norm * (-nVel * nDamp);
-            prevPositions[pIdx].xyz = sPos - newV;
-        } else {
-            prevPositions[pIdx].xyz = sPos - v * 0.15f;
-        }
+    // Damp velocity into terrain
+    vec3 vel = cPos - pPos;
+    if (vel.y < 0.0) {
+        prevPositions[pIdx].xyz.y += vel.y * 0.9;
     }
 
     setParticleColor(pIdx, getDebugColor(dState));
@@ -241,7 +210,7 @@ void main() {
     vec3 prevPos = prevPositions[globalIdx].xyz;
     float debugState = DEBUG_STATE_NORMAL;
 
-    // Phase 1: Sphere collision with CCD
+    // Phase 1: Sphere collision with CCD (RE-ENABLED)
     if (sphereRadius > 0.0) {
         vec3 normal, impactPos;
         float toi = findTOI_BinarySearch(
@@ -251,18 +220,11 @@ void main() {
 
         if (toi < 1.0f) {
             debugState = DEBUG_STATE_SPHERE_CCD_FAIL;
-            setParticleColor(globalIdx, DEBUG_COLOR_SPHERE_CCD_FAIL);
-            
-            float marginDist = sphereRadius + collisionMargin;
-            vec3 surfacePos = sphereCenter + normal * marginDist;
-            vec3 correction = surfacePos - curPos;
-            
-            // Add correction to deltas (Jacobi style)
-            atomicAddVec3(globalIdx, correction * 0.2); // Very conservative delta
+            applySphereCollisionResponse(globalIdx, impactPos, normal, toi, debugState);
         }
     }
 
-    // Phase 2: Terrain collision with CCD
+    // Phase 2: Terrain collision with CCD (Fallback)
     if (debugState == DEBUG_STATE_NORMAL) {
         vec3 normal, impactPos;
         float toi = findTOI_Terrain(
@@ -272,15 +234,7 @@ void main() {
 
         if (toi < 1.0f) {
             debugState = DEBUG_STATE_TERRAIN_CCD_FAIL;
-            setParticleColor(globalIdx, DEBUG_COLOR_TERRAIN_CCD_FAIL);
-            
-            float terrainH = getTerrainHeight(curPos.x, curPos.z);
-            float minY = terrainH + collisionMargin;
-            vec3 surfacePos = curPos;
-            surfacePos.y = minY;
-            vec3 correction = surfacePos - curPos;
-            
-            atomicAddVec3(globalIdx, correction * 0.2);
+            applyTerrainCollisionResponse(globalIdx, impactPos, normal, toi, debugState);
         }
     }
 

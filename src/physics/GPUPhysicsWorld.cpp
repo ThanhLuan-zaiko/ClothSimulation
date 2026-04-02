@@ -76,6 +76,7 @@ GPUPhysicsWorld::~GPUPhysicsWorld() {
 
 bool GPUPhysicsWorld::Initialize(const GPUPhysicsConfig& config) {
     m_Config = config;
+    m_MaxIterations = config.iterations;
     const char* vendor = (const char*)glGetString(GL_VENDOR);
     m_IsHighEndGPU = (vendor && (strstr(vendor, "NVIDIA") || strstr(vendor, "AMD")));
 
@@ -473,9 +474,9 @@ void GPUPhysicsWorld::SetParticlesPinned(size_t start, size_t count, bool pinned
 void GPUPhysicsWorld::Update(float deltaTime) {
     if (!m_Initialized || m_TotalParticles == 0) return;
 
-    // 1. Configuration: High frequency, low iteration for performance (Total 8-10 solves)
-    const int numSubsteps = 5; 
-    const int solveIterations = 2; 
+    // 1. Configuration: High frequency for stability (XPBD style)
+    const int numSubsteps = 16; 
+    const int iterationsPerSubstep = 1;
     float subStepDt = deltaTime / (float)numSubsteps;
     unsigned int numBlocks = (unsigned int)(m_TotalParticles + 255) / 256;
 
@@ -523,50 +524,58 @@ void GPUPhysicsWorld::Update(float deltaTime) {
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, m_PosBuffer);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, m_PrevPosBuffer);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, m_ConstraintBuffer);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, m_BendingConstraintBuffer); // MISSING BINDING FIXED
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, m_DeltaPositionBuffer);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, m_PinnedFlagsBuffer);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, m_ParticleDataBuffer);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, m_ConstraintIndicesBuffer);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 13, m_VelBuffer); // VELOCITY BINDING FOR INTEGRATOR SAFETY
 
     // 4. Substepping Loop
+    UpdateUniforms(subStepDt); // Move OUTSIDE loop to prevent massive stalls
+
     for (int s = 0; s < numSubsteps; s++) {
-        UpdateUniforms(subStepDt); // Updates gravity_dt with subStepDt
-        
+        // Phase 0: Clear deltas for this substep (Solve + CCD will use this)
+        glClearNamedBufferData(m_DeltaPositionBuffer, GL_R32I, GL_RED_INTEGER, GL_INT, nullptr);
+
         // Phase A: Integrate (Predict)
         m_IntegrateShader.Bind();
         glDispatchCompute(numBlocks, 1, 1);
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
-        // Phase B: Solve (PBD)
+        // Phase B: Solve (PBD - Constraint Based Atomic)
         m_SolveShader.Bind();
-        for (int i = 0; i < solveIterations; i++) {
-            for (int color = 0; color < MAX_COLORS; color++) {
-                m_SolveShader.SetInt("current_color", color);
-                glDispatchCompute(numBlocks, 1, 1);
-                glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-            }
+        unsigned int numConstraintsBlocks = (unsigned int)(m_TotalConstraints + 255) / 256;
+        for (int i = 0; i < iterationsPerSubstep; i++) {
+            glDispatchCompute(numConstraintsBlocks, 1, 1);
+            glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
         }
 
-        // Phase C: Collisions
-        glClearNamedBufferData(m_DeltaPositionBuffer, GL_R32I, GL_RED_INTEGER, GL_INT, nullptr);
+        // Phase C: Collisions & Constraints (Deltas)
+        // Dihedral Bending (NOW SAFE: NAN/Inf guards added)
+        if (m_TotalBendingConstraints > 0) {
+            m_BendShader.Bind();
+            m_BendShader.SetInt("numBendingConstraints", (int)m_TotalBendingConstraints);
+            unsigned int numBendBlocks = (unsigned int)(m_TotalBendingConstraints + 255) / 256;
+            glDispatchCompute(numBendBlocks, 1, 1);
+            glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+        }
+
+        // Self-collisions (RE-ENABLED)
         m_ResolveShader.Bind();
         glDispatchCompute(numBlocks, 1, 1);
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
+        // Environment CCD (Sphere + Terrain)
         m_CCDSolveShader.Bind();
         glDispatchCompute(numBlocks, 1, 1);
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
-        // Phase D: Finalize Substep
+        // Phase D: Finalize Substep (Apply ALL deltas from Solve, Bend, and CCD)
         m_ApplyDeltasShader.Bind();
         glDispatchCompute(numBlocks, 1, 1);
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
     }
-
-    // 5. One final safety/clamping pass
-    m_CollideShader.Bind();
-    glDispatchCompute(numBlocks, 1, 1);
-    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 }
 
 void GPUPhysicsWorld::Unbind() const {

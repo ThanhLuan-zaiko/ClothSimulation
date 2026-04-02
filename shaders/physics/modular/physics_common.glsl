@@ -201,6 +201,28 @@ const int MAX_ITERATIONS = MAX_ITERATIONS_RUNTIME;
 const int MAX_COLORS = 16;
 
 // ============================================================================
+// XPBD CONSTANTS (Compliance alpha)
+// ============================================================================
+const float COMPLIANCE_STRUCTURAL = 1e-9;
+const float COMPLIANCE_SHEAR      = 1e-8;
+const float COMPLIANCE_BENDING    = 1e-5;
+const float COMPLIANCE_COLLISION  = 1e-6; // Even softer for jitter suppression (was 1e-7)
+
+// ============================================================================
+// COLLISION HELPERS
+// ============================================================================
+bool checkSphereCollision(vec3 pos, vec3 sCenter, float sRad, float margin, out vec3 normal, out float dist) {
+    vec3 toSphere = pos - sCenter;
+    float d = length(toSphere);
+    dist = d;
+    if (d < sRad + margin) {
+        normal = (d > EPSILON) ? (toSphere / d) : vec3(0, 1, 0);
+        return true;
+    }
+    return false;
+}
+
+// ============================================================================
 // UNIFORM BUFFER OBJECTS (UBO)
 // ============================================================================
 

@@ -19,7 +19,7 @@ const float VELOCITY_DAMPING = 0.995;
 // ============================================================================
 
 void atomicAddVec3(uint baseIdx, vec3 delta) {
-    const float scale = 10000.0;
+    const float scale = 1000000.0; // Consistent micro-precision scale
     atomicAdd(deltaPositions[baseIdx * 3 + 0], int(delta.x * scale));
     atomicAdd(deltaPositions[baseIdx * 3 + 1], int(delta.y * scale));
     atomicAdd(deltaPositions[baseIdx * 3 + 2], int(delta.z * scale));
@@ -74,24 +74,10 @@ void applyStrainLimiting(uint idx) {
 
         if (pinnedFlags[p1] < 0.5) {
             atomicAddVec3(uint(p1), correctionVec);
-            setParticleColor(uint(p1), DEBUG_COLOR_STRAIN_RATE);
         }
         if (pinnedFlags[p2] < 0.5) {
             atomicAddVec3(uint(p2), -correctionVec);
-            setParticleColor(uint(p2), DEBUG_COLOR_STRAIN_RATE);
         }
-    }
-
-    // Gentle velocity projection along constraint
-    vec3 dir = delta / dist;
-    vec3 vel1 = pos1 - prevPos1;
-    vec3 vel2 = pos2 - prevPos2;
-    float relVel = dot(vel1 - vel2, dir);
-
-    if (abs(relVel) > 0.01) {
-        float vDamping = (1.0 - VELOCITY_DAMPING) * relVel * 0.5;
-        if (pinnedFlags[p1] < 0.5) prevPositions[p1].xyz += dir * vDamping;
-        if (pinnedFlags[p2] < 0.5) prevPositions[p2].xyz -= dir * vDamping;
     }
 }
 

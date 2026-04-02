@@ -98,7 +98,7 @@ void main() {
     vec3 lightDir = normalize(u_LightPos - v_FragPos);
 
     // ============================================================
-    // OREN-NAYAR DIFFUSE MODEL
+    // OREN-NAYAR DIFFUSE MODEL (Qualitative Model)
     // ============================================================
     float dotNL = max(dot(norm, lightDir), 0.0);
     float dotNV = max(dot(norm, viewDir), 0.0);
@@ -107,19 +107,32 @@ void main() {
     float A = 1.0 - 0.5 * (sigma2 / (sigma2 + 0.33));
     float B = 0.45 * (sigma2 / (sigma2 + 0.09));
 
-    float theta_i = acos(dotNL);
-    float theta_r = acos(dotNV);
-    float alpha = max(theta_i, theta_r);
-    float beta = min(theta_i, theta_r);
-
-    // Azimuthal difference approximation
+    // Improved Oren-Nayar: Approximate azimuthal difference
     vec3 lightProj = normalize(lightDir - norm * dotNL);
     vec3 viewProj = normalize(viewDir - norm * dotNV);
-    float cos_phi_diff = max(0.0, dot(lightProj, viewProj));
+    float cos_phi_diff = clamp(dot(lightProj, viewProj), 0.0, 1.0);
 
-    float oren_nayar = dotNL * (A + B * cos_phi_diff * sin(alpha) * tan(beta));
-    vec3 diffuse = oren_nayar * vec3(1.0, 0.98, 0.95);
+    float sin_alpha, tan_beta;
+    if (dotNL > dotNV) {
+        sin_alpha = sqrt(1.0 - dotNV * dotNV);
+        tan_beta = sqrt(1.0 - dotNL * dotNL) / dotNL;
+    } else {
+        sin_alpha = sqrt(1.0 - dotNL * dotNL);
+        tan_beta = sqrt(1.0 - dotNV * dotNV) / dotNV;
+    }
 
+    float oren_nayar = dotNL * (A + B * cos_phi_diff * sin_alpha * tan_beta);
+    vec3 diffuse = oren_nayar * vec3(1.0, 0.99, 0.98);
+
+    // ============================================================
+    // SHEEN / FUZZ COMPONENT (Cloth specific)
+    // ============================================================
+    // Mimics the way light catches fine fibers on the edge
+    float sheen_roughness = 0.5;
+    float inv_sheen_rough = 1.0 / sheen_roughness;
+    float sheen = pow(1.0 - dotNV, inv_sheen_rough) * dotNL;
+    vec3 sheen_color = vec3(1.0, 1.0, 1.0) * 0.4;
+    
     // ============================================================
     // ANISOTROPIC SPECULAR (KAJIYA-KAY)
     // ============================================================

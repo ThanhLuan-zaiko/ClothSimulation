@@ -27,21 +27,33 @@ void main() {
         return;
     }
 
-    // 1. Apply accumulated deltas (Collisions)
-    const float invScale = 1.0 / 10000.0;
+    // 1. Apply accumulated deltas (Collisions + Constraints)
+    const float invScale = 1.0 / 1000000.0; // Updated to 1,000,000 scale
     float dx = float(deltaPositions[idx * 3 + 0]) * invScale;
     float dy = float(deltaPositions[idx * 3 + 1]) * invScale;
     float dz = float(deltaPositions[idx * 3 + 2]) * invScale;
     vec3 delta = vec3(dx, dy, dz);
 
-    // Hard clamp to prevent any residual energy spikes
-    const float MAX_TOTAL_DELTA = 0.1f;
-    if (length(delta) > MAX_TOTAL_DELTA) {
-        delta = normalize(delta) * MAX_TOTAL_DELTA;
+    // CRITICAL: Strict clamping to prevent energy spikes (0.025 units max per sub-step)
+    const float MAX_TOTAL_DELTA = 0.025f; 
+    float deltaLen = length(delta);
+    if (deltaLen > MAX_TOTAL_DELTA) {
+        delta = (delta / deltaLen) * MAX_TOTAL_DELTA;
     }
 
     // 2. Update current position
+    vec3 oldPos = positions[idx].xyz;
     positions[idx].xyz += delta;
+
+    // HIGH DAMPING: Synchronize prevPositions 80% to kill correction jitter
+    // This absorbs the shock from atomic corrections.
+    prevPositions[idx].xyz += delta * 0.8; 
+
+    // Safety: ensure positions are not NaN
+    if (any(isnan(positions[idx].xyz))) {
+        positions[idx].xyz = oldPos;
+        return;
+    }
 
     // 3. Reset delta for next iteration
     deltaPositions[idx * 3 + 0] = 0;

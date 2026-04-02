@@ -151,14 +151,15 @@ void resolveCollision(
     softenedPenetration = min(softenedPenetration, MAX_SELF_CORRECTION);
     
     vec3 correction = normal * softenedPenetration;
+    const float scale = 1000000.0;
 
-    atomicAdd(deltaPositions[idxA * 3 + 0], int(correction.x * 10000.0));
-    atomicAdd(deltaPositions[idxA * 3 + 1], int(correction.y * 10000.0));
-    atomicAdd(deltaPositions[idxA * 3 + 2], int(correction.z * 10000.0));
+    atomicAdd(deltaPositions[idxA * 3 + 0], int(correction.x * scale));
+    atomicAdd(deltaPositions[idxA * 3 + 1], int(correction.y * scale));
+    atomicAdd(deltaPositions[idxA * 3 + 2], int(correction.z * scale));
 
-    atomicAdd(deltaPositions[idxB * 3 + 0], int(-correction.x * 10000.0));
-    atomicAdd(deltaPositions[idxB * 3 + 1], int(-correction.y * 10000.0));
-    atomicAdd(deltaPositions[idxB * 3 + 2], int(-correction.z * 10000.0));
+    atomicAdd(deltaPositions[idxB * 3 + 0], int(-correction.x * scale));
+    atomicAdd(deltaPositions[idxB * 3 + 1], int(-correction.y * scale));
+    atomicAdd(deltaPositions[idxB * 3 + 2], int(-correction.z * scale));
 
     // Set self-collision debug color (Cyan)
     if (penetration > selfCollisionRadius * 0.1f) {

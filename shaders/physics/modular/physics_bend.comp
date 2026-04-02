@@ -180,54 +180,43 @@ void main() {
     vec3 grad3, grad4;
     calculateBendingGradients(x1, x2, x3, x4, grad3, grad4);
 
-    float grad3Len = length(grad3);
-    float grad4Len = length(grad4);
+    // SAFETY CHECK: Prevent explosion from invalid gradients (collinear particles)
+    if (any(isnan(grad3)) || any(isnan(grad4)) || any(isinf(grad3)) || any(isinf(grad4))) return;
 
-    if (grad3Len < EPSILON && grad4Len < EPSILON) return;
+    float g3len = length(grad3);
+    float g4len = length(grad4);
+    if (g3len + g4len < EPSILON) return;
 
-    // Phase 3: Implicit integration
-    float stiffness = bc.params.y * bc.padding.x;
-    stiffness = min(stiffness * 0.08, 0.5);
+    // Phase 3: XPBD Bending
+    // INCREASED COMPLIANCE: Make bending softer to prevent fighting with collisions
+    float alpha = 0.0005; 
+    float alpha_tilde = alpha / (deltaTime * deltaTime);
 
     float w3 = (pinnedFlags[p3] < 0.5) ? 1.0 : 0.0;
     float w4 = (pinnedFlags[p4] < 0.5) ? 1.0 : 0.0;
-    float sumW = w3 + w4;
+    
+    // Gradient squared sum: w3*|grad3|^2 + w4*|grad4|^2
+    float denominator = w3 * dot(grad3, grad3) + w4 * dot(grad4, grad4) + alpha_tilde;
 
-    if (sumW < EPSILON) return;
+    if (denominator < 1e-6) return;
 
-    float lambda = angleError * stiffness / sumW;
+    // delta_lambda = (-C - alpha_tilde * lambda) / denominator
+    float delta_lambda = -angleError / denominator;
 
-    vec3 vel3 = positions[p3].xyz - prevPositions[p3].xyz;
-    vec3 vel4 = positions[p4].xyz - prevPositions[p4].xyz;
+    // VERY STRICT LIMITER: Bend forces should be subtle
+    const float MAX_BEND_DELTA = 0.005; 
 
     if (w3 > 0.5) {
-        vec3 delta3 = -grad3 * lambda * w3;
-        delta3 = applyImplicitDamping(delta3, vel3);
+        vec3 delta3 = grad3 * delta_lambda * w3;
+        float d3len = length(delta3);
+        if (d3len > MAX_BEND_DELTA) delta3 = (delta3 / d3len) * MAX_BEND_DELTA;
         atomicAddVec3(p3, delta3);
-        
-        // Set bending debug color (Purple)
-        if (bendingExceeded) {
-            setParticleColor(uint(p3), DEBUG_COLOR_BENDING_LIMIT);
-        }
     }
 
     if (w4 > 0.5) {
-        vec3 delta4 = -grad4 * lambda * w4;
-        delta4 = applyImplicitDamping(delta4, vel4);
+        vec3 delta4 = grad4 * delta_lambda * w4;
+        float d4len = length(delta4);
+        if (d4len > MAX_BEND_DELTA) delta4 = (delta4 / d4len) * MAX_BEND_DELTA;
         atomicAddVec3(p4, delta4);
-        
-        // Set bending debug color (Purple)
-        if (bendingExceeded) {
-            setParticleColor(uint(p4), DEBUG_COLOR_BENDING_LIMIT);
-        }
     }
-
-    // Phase 4: Strain limiting on adjacent edges
-    float edgeRestLength = elen;
-    applyStrainLimiting(uint(p1), uint(p2), edgeRestLength, MAX_STRAIN_RATE);
-
-    float restLength3 = length(x3 - x1);
-    float restLength4 = length(x4 - x2);
-    applyStrainLimiting(uint(p1), uint(p3), restLength3, MAX_STRAIN_RATE);
-    applyStrainLimiting(uint(p2), uint(p4), restLength4, MAX_STRAIN_RATE);
 }

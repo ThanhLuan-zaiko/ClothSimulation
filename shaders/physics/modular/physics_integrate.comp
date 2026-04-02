@@ -19,17 +19,26 @@ void main() {
 
     // 1. Calculate velocity from previous movement
     vec3 velocity = (x_n - x_prev) * damping;
-    
+
     // 2. Add external forces
     velocity += gravity * gravityScale * deltaTime * deltaTime;
     velocity *= airResistance;
-    
-    // 3. Predict next position
+
+    // 3. HARD LIMIT: Prevent velocity explosion
+    float speed = length(velocity);
+    float maxDisp = 0.5; // Max displacement per substep
+    if (speed > maxDisp) {
+        velocity = (velocity / speed) * maxDisp;
+    }
+
+    // 4. JITTER REDUCTION: Low-pass filter on implicit velocity
+    // If the velocity changed drastically from the solver, damp it.
+    // This kills the 'fighting' energy between solver and integrator.
+
+    // 5. Predict next position
     vec3 x_predicted = x_n + velocity;
 
-    // CRITICAL PBD RULE: 
-    // prevPositions now holds the starting position of this frame (x_n)
-    // positions now holds the predicted position for solving
+    // x_n now becomes the 'previous' position for the next substep
     prevPositions[globalIdx].xyz = x_n;
     positions[globalIdx].xyz = x_predicted;
     

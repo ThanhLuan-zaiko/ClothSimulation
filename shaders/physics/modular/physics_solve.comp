@@ -42,126 +42,64 @@ const float ITERATION_STARVATION_THRESHOLD = 3.0f; // Min iterations needed
 // HELPER FUNCTIONS
 // ============================================================================
 
-float getStiffnessForType(float type) {
-    float stiffnesses[5];
-    stiffnesses[0] = 0.50;  // Structural
-    stiffnesses[1] = 0.35;  // Shear
-    stiffnesses[2] = 0.18;  // Bending
-    stiffnesses[3] = 0.40;  // Skip 4
-    stiffnesses[4] = 0.45;  // Skip 8
-    return stiffnesses[int(type)];
-}
-
-void applyGroundStabilization(inout vec3 pos, inout vec3 vel, float gLevel, float margin) {
-    float heightAboveGround = pos.y - gLevel;
-    if (heightAboveGround < margin) {
-        float dFactor = GROUND_STABILIZER * smoothstep(0.0, margin, heightAboveGround);
-        vel *= dFactor;
-    }
-}
-
-void applyInteractiveForces(inout vec3 curPos, uint globalIdx) {
-    if (!interactionActive) return;
+float getComplianceForType(float type) {
+    // XPBD Compliance Mapping (Logarithmic) - Softened for stability
+    // stretchResistance 0.0 -> alpha = 10^-2 (Very Soft)
+    // stretchResistance 1.0 -> alpha = 10^-7 (Stiff but stable)
+    float exponent = mix(-2.0, -7.0, clamp(stretchResistance, 0.0, 1.0));
+    float baseCompliance = pow(10.0, exponent);
     
-    vec3 target = interactionPos;
-    vec3 toTarget = target - curPos;
-    float dist = length(toTarget);
-    
-    float radius = 9.5;
-    if (dist < radius) {
-        float influence = 1.0 - dist / radius;
-        influence = pow(influence, 0.4);
-        
-        vec3 pull = toTarget * 0.5 * influence;
-        vec3 upAxis = vec3(0, 1, 0);
-        vec3 vortexDir = normalize(cross(toTarget + vec3(0.01), upAxis));
-        vec3 vortex = vortexDir * 0.4 * influence;
-        float wave = sin(curPos.x * 4.0 + curPos.z * 3.0 + u_Time * 12.0) * 0.08 * influence;
-        vec3 ripple = vec3(0, wave, 0);
-        vec3 lift = vec3(0, 0.4 * influence, 0);
-        
-        curPos += (pull + vortex + ripple + lift);
-    }
-}
-
-void projectVelocityOrthogonal(inout vec3 vel, vec3 constraintDir, float inDamping)
-{
-    float velAlongConstraint = dot(vel, constraintDir);
-    vec3 projectedVel = vel - velAlongConstraint * constraintDir * (1.0 - inDamping);
-    vel = projectedVel;
+    if (type == 0.0) return baseCompliance;         // Structural
+    if (type == 1.0) return baseCompliance * 2.0;   // Shear
+    if (type == 2.0) return 0.0001;                 // Constant bending compliance
+    if (type == 3.0) return baseCompliance * 1.5;   // Skip 4
+    if (type == 4.0) return baseCompliance * 2.0;   // Skip 8
+    return baseCompliance;
 }
 
 // ============================================================================
-// ENVIRONMENT COLLISIONS (Safe Projection)
-// ============================================================================
-
-void solveEnvironmentCollisions(inout vec3 pos) {
-    const float MAX_PUSH_PER_ITER = 0.05f; // Limit snap distance
-
-    // 1. Sphere Collision
-    if (sphereRadius > 0.0) {
-        float minDist = sphereRadius + collisionMargin;
-        vec3 toSphere = pos - sphereCenter;
-        float d2 = dot(toSphere, toSphere);
-        if (d2 < minDist * minDist) {
-            float d = sqrt(d2);
-            vec3 normal = (d > EPSILON) ? (toSphere / d) : vec3(0, 1, 0);
-            vec3 targetPos = sphereCenter + normal * minDist;
-            
-            // Move partially towards target to keep it stable
-            vec3 diff = targetPos - pos;
-            if (length(diff) > MAX_PUSH_PER_ITER) {
-                diff = normalize(diff) * MAX_PUSH_PER_ITER;
-            }
-            pos += diff;
-        }
-    }
-
-    // 2. Terrain Collision
-    float terrainH = getTerrainHeight(pos.x, pos.z);
-    float minY = terrainH + collisionMargin;
-    if (pos.y < minY) {
-        float diff = minY - pos.y;
-        pos.y += min(diff, MAX_PUSH_PER_ITER);
-    }
-}
-
-// ============================================================================
-// MAIN
+// MAIN (XPBD SOLVER - CONSTRAINT BASED)
 // ============================================================================
 
 void main() {
-    uint globalIdx = gl_GlobalInvocationID.x;
-    if (globalIdx >= uint(numParticles)) return;
+    uint cIdx = gl_GlobalInvocationID.x;
+    if (cIdx >= uint(numConstraints)) return;
 
-    uint color = getParticleColor(globalIdx);
-    if (color != uint(current_color)) return;
+    ConstraintDataType c = constraints[cIdx];
+    int p1 = c.indices.x;
+    int p2 = c.indices.y;
 
-    if (pinnedFlags[globalIdx] >= 0.5f) return;
+    float w1 = (pinnedFlags[p1] < 0.5) ? 1.0 : 0.0;
+    float w2 = (pinnedFlags[p2] < 0.5) ? 1.0 : 0.0;
+    float sumW = w1 + w2;
+    if (sumW <= EPSILON) return;
 
-    vec3 curPos = positions[globalIdx].xyz;
+    vec3 x1 = positions[p1].xyz;
+    vec3 x2 = positions[p2].xyz;
     
-    // Environment projection
-    solveEnvironmentCollisions(curPos);
+    vec3 delta = x1 - x2;
+    float d = length(delta);
+    if (d < EPSILON) return;
 
-    // Constraints
-    ivec2 range = getAdjacencyRange(globalIdx);
-    for (int i = 0; i < range.y; i++) {
-        int cIdx = constraintIndices[range.x + i];
-        ConstraintDataType c = constraints[cIdx];
-        int otherIdx = (c.indices.x == int(globalIdx)) ? c.indices.y : c.indices.x;
-        vec3 otherPos = positions[otherIdx].xyz;
+    float constraint = d - c.params.x;
+    vec3 n = delta / d;
 
-        vec3 delta = otherPos - curPos;
-        float d = length(delta);
-        if (d > EPSILON) {
-            float diff = (d - c.params.x) / d;
-            curPos += delta * diff * getStiffnessForType(c.padding.x) * 0.5;
-        }
+    // XPBD Compliance
+    float alpha_tilde = getComplianceForType(c.padding.x) / (deltaTime * deltaTime);
+    float delta_lambda = -constraint / (sumW + alpha_tilde);
+
+    // Apply corrections using ATOMIC ADDS to prevent jitter
+    // Increased scale to 1,000,000 for micro-precision
+    vec3 corr = n * delta_lambda;
+    const float scale = 1000000.0;
+    if (w1 > 0.0) {
+        atomicAdd(deltaPositions[p1 * 3 + 0], int(corr.x * w1 * scale));
+        atomicAdd(deltaPositions[p1 * 3 + 1], int(corr.y * w1 * scale));
+        atomicAdd(deltaPositions[p1 * 3 + 2], int(corr.z * w1 * scale));
     }
-
-    // Final environment guard
-    solveEnvironmentCollisions(curPos);
-
-    positions[globalIdx].xyz = curPos;
+    if (w2 > 0.0) {
+        atomicAdd(deltaPositions[p2 * 3 + 0], int(-corr.x * w2 * scale));
+        atomicAdd(deltaPositions[p2 * 3 + 1], int(-corr.y * w2 * scale));
+        atomicAdd(deltaPositions[p2 * 3 + 2], int(-corr.z * w2 * scale));
+    }
 }
