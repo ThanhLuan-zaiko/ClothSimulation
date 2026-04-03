@@ -312,7 +312,12 @@ size_t GPUPhysicsWorld::InitializeCloth(int width, int height, float sx, float s
     for (int y = 0; y <= height; ++y) {
         for (int x = 0; x <= width; ++x) {
             size_t idx = y * (width + 1) + x;
-            glm::vec3 p(sx + x * len, sy, sz + y * len);
+            
+            // Add tiny noise to break symmetry (helps with sliding off sphere)
+            float noiseX = ((float)rand() / (float)RAND_MAX - 0.5f) * 0.005f;
+            float noiseZ = ((float)rand() / (float)RAND_MAX - 0.5f) * 0.005f;
+
+            glm::vec3 p(sx + x * len + noiseX, sy, sz + y * len + noiseZ);
             pos[idx] = glm::vec4(p, 1.0f);
             prevPos[idx] = glm::vec4(p, (float)clothID);
             vel[idx] = glm::vec4(0.0f, 0.0f, 0.0f, pinned ? 1.0f : 0.0f);
@@ -446,7 +451,12 @@ void GPUPhysicsWorld::ResetCloth(size_t offset, int width, int height, float sx,
     for (int y = 0; y <= height; ++y) {
         for (int x = 0; x <= width; ++x) {
             size_t idx = y * (width + 1) + x;
-            glm::vec3 p(sx + x * len, sy, sz + y * len);
+            
+            // Add tiny noise to break symmetry (helps with sliding off sphere)
+            float noiseX = ((float)rand() / (float)RAND_MAX - 0.5f) * 0.005f;
+            float noiseZ = ((float)rand() / (float)RAND_MAX - 0.5f) * 0.005f;
+
+            glm::vec3 p(sx + x * len + noiseX, sy, sz + y * len + noiseZ);
             pos[idx] = glm::vec4(p, 1.0f);
             prevPos[idx] = glm::vec4(p, (float)clothID);
             vel[idx] = glm::vec4(0.0f, 0.0f, 0.0f, pinned ? 1.0f : 0.0f);
@@ -571,7 +581,12 @@ void GPUPhysicsWorld::Update(float deltaTime) {
         glDispatchCompute(numBlocks, 1, 1);
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
-        // Phase D: Finalize Substep (Apply ALL deltas from Solve, Bend, and CCD)
+        // Phase D: Static Collision Enforcement (Safety Net)
+        m_CollideShader.Bind();
+        glDispatchCompute(numBlocks, 1, 1);
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+        // Phase E: Finalize Substep (Apply ALL deltas from Solve, Bend, and CCD)
         m_ApplyDeltasShader.Bind();
         glDispatchCompute(numBlocks, 1, 1);
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);

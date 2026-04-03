@@ -24,68 +24,53 @@ float findTOI_BinarySearch(
     vec3 sCenter, float sRad, float margin,
     out vec3 outNormal, out vec3 outImpactPos)
 {
-    float minDist = sRad + margin;
-    float minDistSq = minDist * minDist;
+    float totalRad = sRad + margin;
+    float totalRadSq = totalRad * totalRad;
 
-    vec3 vel = endPos - startPos;
-    float velLen = length(vel);
+    vec3 d = endPos - startPos;
+    vec3 f = startPos - sCenter;
 
-    if (velLen < 0.0001f) {
-        vec3 toSphere = startPos - sCenter;
-        float distSq = dot(toSphere, toSphere);
-        if (distSq < minDistSq) {
-            float d = sqrt(distSq);
-            outNormal = (d > EPSILON) ? (toSphere / d) : vec3(0, 1, 0);
+    float a = dot(d, d);
+    float b = 2.0 * dot(f, d);
+    float c = dot(f, f) - totalRadSq;
+
+    if (a < 0.000001) { // Particle stationary
+        if (c < 0.0) {
+            float dist = length(f);
+            outNormal = (dist > EPSILON) ? (f / dist) : vec3(0, 1, 0);
             outImpactPos = startPos;
-            return 0.0f;
+            return 0.0;
         }
-        return 1.0f;
+        return 1.0;
     }
 
-    float tMin = 0.0f;
-    float tMax = 1.0f;
-    float toi = 1.0f;
+    float discriminant = b * b - 4.0 * a * c;
+    if (discriminant < 0.0) {
+        return 1.0; // Ray misses sphere
+    }
 
-    vec3 testPos = startPos;
-    vec3 toSphere = testPos - sCenter;
-    if (dot(toSphere, toSphere) < minDistSq) {
-        float d = length(toSphere);
-        outNormal = (d > EPSILON) ? (toSphere / d) : vec3(0, 1, 0);
+    discriminant = sqrt(discriminant);
+    float t1 = (-b - discriminant) / (2.0 * a);
+    float t2 = (-b + discriminant) / (2.0 * a);
+
+    // Check if start is already inside
+    if (c < 0.0) {
+        float dist = length(f);
+        outNormal = (dist > EPSILON) ? (f / dist) : vec3(0, 1, 0);
         outImpactPos = startPos;
-        return 0.0f;
+        return 0.0;
     }
 
-    testPos = endPos;
-    toSphere = testPos - sCenter;
-    if (dot(toSphere, toSphere) >= minDistSq) {
-        return 1.0f;
+    // Check first hit
+    if (t1 >= 0.0 && t1 <= 1.0) {
+        outImpactPos = startPos + d * t1;
+        vec3 toSphere = outImpactPos - sCenter;
+        float dist = length(toSphere);
+        outNormal = (dist > EPSILON) ? (toSphere / dist) : vec3(0, 1, 0);
+        return t1;
     }
 
-    for (int i = 0; i < CCD_MAX_ITERATIONS; i++) {
-        float tMid = (tMin + tMax) * 0.5f;
-        testPos = startPos + vel * tMid;
-        toSphere = testPos - sCenter;
-        float distSq = dot(toSphere, toSphere);
-
-        if (abs(distSq - minDistSq) < CCD_TOLERANCE) {
-            toi = tMid;
-            break;
-        }
-
-        if (distSq < minDistSq) {
-            tMax = tMid;
-            toi = tMid;
-        } else {
-            tMin = tMid;
-        }
-    }
-
-    outImpactPos = startPos + vel * toi;
-    vec3 finalToSphere = outImpactPos - sCenter;
-    float fd = length(finalToSphere);
-    outNormal = (fd > EPSILON) ? (finalToSphere / fd) : vec3(0, 1, 0);
-
-    return toi;
+    return 1.0;
 }
 
 // ============================================================================
@@ -97,40 +82,39 @@ float findTOI_Terrain(
     float margin,
     out vec3 outNormal, out vec3 outImpactPos)
 {
-    vec3 vel = endPos - startPos;
-
-    float tMin = 0.0f;
-    float tMax = 1.0f;
-    float toi = 1.0f;
-
-    // Early check: if both start and end are above terrain+margin, no collision
-    float hStart = getTerrainHeight(startPos.x, startPos.z) + margin;
-    float hEnd = getTerrainHeight(endPos.x, endPos.z) + margin;
-    if (startPos.y > hStart && endPos.y > hEnd) {
-        return 1.0f;
-    }
-
-    for (int i = 0; i < CCD_MAX_ITERATIONS; i++) {
-        float tMid = (tMin + tMax) * 0.5f;
-        vec3 testPos = startPos + vel * tMid;
-        float hMid = getTerrainHeight(testPos.x, testPos.z) + margin;
-
-        if (testPos.y < hMid) {
-            tMax = tMid;
-            toi = tMid;
-        } else {
-            tMin = tMid;
+    const int SAMPLES = 8;
+    vec3 d = endPos - startPos;
+    
+    for (int i = 0; i <= SAMPLES; i++) {
+        float t = float(i) / float(SAMPLES);
+        vec3 p = startPos + d * t;
+        float h = getTerrainHeight(p.x, p.z) + margin;
+        
+        if (p.y < h) {
+            outImpactPos = p;
+            outImpactPos.y = h;
+            outNormal = getTerrainNormal(p.x, p.z);
+            return t;
         }
-
-        if (tMax - tMin < CCD_TOLERANCE) break;
     }
 
-    outImpactPos = startPos + vel * toi;
-    float hImpact = getTerrainHeight(outImpactPos.x, outImpactPos.z) + margin;
-    outImpactPos.y = hImpact;
-    outNormal = getTerrainNormal(outImpactPos.x, outImpactPos.z);
+    return 1.0;
+}
 
-    return toi;
+// ============================================================================
+// HASHING FOR RANDOMNESS
+// ============================================================================
+
+float hash11(float p) {
+    p = fract(p * .1031);
+    p *= p + 33.33;
+    p *= p + p;
+    return fract(p);
+}
+
+float dynamicJitter(uint pIdx) {
+    // Combine particle ID with time for dynamic noise
+    return hash11(float(pIdx) * 1.618 + u_Time * 0.1);
 }
 
 // ============================================================================
@@ -138,7 +122,7 @@ float findTOI_Terrain(
 // ============================================================================
 
 void atomicAddVec3(uint baseIdx, vec3 delta) {
-    const float scale = 1000000.0; // Increased scale for micro-precision
+    const float scale = 1000000.0; // Consistent micro-precision scale
     atomicAdd(deltaPositions[baseIdx * 3 + 0], int(delta.x * scale));
     atomicAdd(deltaPositions[baseIdx * 3 + 1], int(delta.y * scale));
     atomicAdd(deltaPositions[baseIdx * 3 + 2], int(delta.z * scale));
@@ -156,19 +140,60 @@ void applySphereCollisionResponse(
     vec3 cPos = positions[pIdx].xyz;
     vec3 pPos = prevPositions[pIdx].xyz;
     float mDist = sphereRadius + collisionMargin;
-    vec3 sPos = sphereCenter + norm * mDist;
+    
+    // XPBD-style correction
+    vec3 toSphere = cPos - sphereCenter;
+    float dist = length(toSphere);
+    float C = dist - mDist;
 
-    // Displacement correction (PBD style)
-    vec3 corr = (sPos - cPos) * 0.95; 
-    atomicAddVec3(pIdx, corr);
-
-    // CRITICAL: Damp the velocity direction that points into the sphere
-    // We move prevPosition closer to current position to reduce Verlet velocity
-    vec3 vel = cPos - pPos;
-    float vDotN = dot(vel, norm);
-    if (vDotN < 0.0) {
-        // Remove 90% of the velocity component towards the sphere
-        prevPositions[pIdx].xyz += norm * (vDotN * 0.9);
+    if (C < 0.0) {
+        float alpha_tilde = COMPLIANCE_COLLISION / (deltaTime * deltaTime);
+        float w = (pinnedFlags[pIdx] < 0.5) ? 1.0 : 0.0;
+        if (w > 0.0) {
+            float delta_lambda = -C / (w + alpha_tilde);
+            
+            // BREAK SYMMETRY: Subtle normal perturbation to encourage random sliding
+            // Only apply when the normal is nearly vertical
+            vec3 jitteredNorm = norm;
+            if (abs(norm.y) > 0.9) {
+                float nX = dynamicJitter(pIdx * 7) * 0.04 - 0.02;
+                float nZ = dynamicJitter(pIdx * 13) * 0.04 - 0.02;
+                jitteredNorm = normalize(norm + vec3(nX, 0.0, nZ));
+            }
+            
+            vec3 corrN = jitteredNorm * delta_lambda;
+            
+            // 1. Tangential Friction
+            vec3 vel = cPos - pPos;
+            float vDotN = dot(vel, norm);
+            vec3 vTangential = vel - norm * vDotN;
+            float vTangLen = length(vTangential);
+            
+            vec3 corrT = vec3(0.0);
+            if (vTangLen > EPSILON) {
+                float mu = (vTangLen < staticFrictionThreshold) ? sphereStaticFriction : sphereDynamicFriction;
+                
+                // Breaking symmetry: dynamic jitter makes sliding unpredictable and natural
+                float jitter = dynamicJitter(pIdx) * 0.4 + 0.8; // 0.8 to 1.2
+                mu *= jitter;
+                
+                // Tangential correction (PBD friction)
+                float frictionStrength = clamp(mu * sphereGripFactor * (1.0 - t), 0.0, 1.0);
+                corrT = -vTangential * frictionStrength;
+            }
+            
+            // Apply combined correction (Normal + Friction)
+            vec3 totalCorr = corrN + corrT;
+            
+            // Safety clamp
+            const float MAX_COLL_CORR = 0.08;
+            float corrLen = length(totalCorr);
+            if (corrLen > MAX_COLL_CORR) totalCorr = (totalCorr / corrLen) * MAX_COLL_CORR;
+            
+            atomicAddVec3(pIdx, totalCorr);
+            
+            // Restitution (bounce) handled implicitly by solver synchronization
+        }
     }
 
     setParticleColor(pIdx, getDebugColor(dState));
@@ -181,17 +206,47 @@ void applyTerrainCollisionResponse(
 {
     vec3 cPos = positions[pIdx].xyz;
     vec3 pPos = prevPositions[pIdx].xyz;
-    float tY = getTerrainHeight(cPos.x, cPos.z) + collisionMargin;
-    vec3 sPos = cPos;
-    sPos.y = tY;
+    float terrainH = getTerrainHeight(cPos.x, cPos.z);
+    float minY = terrainH + collisionMargin;
 
-    vec3 corr = (sPos - cPos) * 0.95;
-    atomicAddVec3(pIdx, corr);
-
-    // Damp velocity into terrain
-    vec3 vel = cPos - pPos;
-    if (vel.y < 0.0) {
-        prevPositions[pIdx].xyz.y += vel.y * 0.9;
+    float C = cPos.y - minY;
+    if (C < 0.0) {
+        float alpha_tilde = COMPLIANCE_COLLISION / (deltaTime * deltaTime);
+        float w = (pinnedFlags[pIdx] < 0.5) ? 1.0 : 0.0;
+        if (w > 0.0) {
+            float delta_lambda = -C / (w + alpha_tilde);
+            
+            // BREAK SYMMETRY: Subtle normal perturbation to encourage random sliding
+            // Only apply when the normal is nearly vertical
+            vec3 jitteredNorm = norm;
+            if (abs(norm.y) > 0.9) {
+                float nX = dynamicJitter(pIdx * 7) * 0.04 - 0.02;
+                float nZ = dynamicJitter(pIdx * 13) * 0.04 - 0.02;
+                jitteredNorm = normalize(norm + vec3(nX, 0.0, nZ));
+            }
+            
+            vec3 corrN = jitteredNorm * delta_lambda; 
+            
+            // Friction
+            vec3 vel = cPos - pPos;
+            float vDotN = dot(vel, norm);
+            vec3 vTangential = vel - norm * vDotN;
+            float vTangLen = length(vTangential);
+            
+            vec3 corrT = vec3(0.0);
+            if (vTangLen > EPSILON) {
+                float mu = frictionFactor;
+                float jitter = dynamicJitter(pIdx) * 0.3 + 0.85;
+                corrT = -vTangential * clamp(mu * jitter * terrainDamping, 0.0, 1.0);
+            }
+            
+            vec3 totalCorr = corrN + corrT;
+            const float MAX_COLL_CORR = 0.08;
+            float corrLen = length(totalCorr);
+            if (corrLen > MAX_COLL_CORR) totalCorr = (totalCorr / corrLen) * MAX_COLL_CORR;
+            
+            atomicAddVec3(pIdx, totalCorr);
+        }
     }
 
     setParticleColor(pIdx, getDebugColor(dState));

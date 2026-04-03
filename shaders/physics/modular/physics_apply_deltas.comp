@@ -45,9 +45,9 @@ void main() {
     vec3 oldPos = positions[idx].xyz;
     positions[idx].xyz += delta;
 
-    // HIGH DAMPING: Synchronize prevPositions 80% to kill correction jitter
-    // This absorbs the shock from atomic corrections.
-    prevPositions[idx].xyz += delta * 0.8; 
+    // STABLE SYNC: Synchronize prevPositions 100% to maintain velocity across corrections.
+    // This prevents the "wind-like" jittering caused by velocity-damping fighting.
+    prevPositions[idx].xyz += delta; 
 
     // Safety: ensure positions are not NaN
     if (any(isnan(positions[idx].xyz))) {

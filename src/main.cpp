@@ -13,6 +13,8 @@
 #include "utils/ClothSimulationBenchmark.h"
 #include "utils/AdaptiveQuality.h"
 
+#include <ctime>
+
 using namespace cloth;
 
 // Global application pointer
@@ -52,6 +54,9 @@ std::string GetAssetPath(const std::string& relativePath) {
 }
 
 int main() {
+    // Seed random number generator
+    srand(static_cast<unsigned int>(time(NULL)));
+
     // === APPLY TDR DELAY FIX FOR INTEL GPU ===
     // Increase GPU timeout from 2s to 10s to prevent driver timeout crashes
     HKEY hKey;
@@ -165,19 +170,22 @@ int main() {
     gpuPhysicsConfig.gravity = glm::vec3(0.0f, -9.81f, 0.0f);
     gpuPhysicsConfig.damping = 0.995f;
     gpuPhysicsConfig.iterations = state.gpuInfo.physicsIterations;  // LOW=2, MEDIUM=3, HIGH=4, ULTRA=5
-    gpuPhysicsConfig.collisionMargin = 0.35f;  // INCREASED: Much larger margin for earlier collision detection
+    gpuPhysicsConfig.collisionMargin = 0.045f;  // REDUCED: Smaller margin for closer collision detection
     gpuPhysicsConfig.dampingFactor = 0.85f;
     gpuPhysicsConfig.frictionFactor = 0.80f;
     gpuPhysicsConfig.collisionSubsteps = 32;   // INCREASED: More substeps for better collision detection
     gpuPhysicsConfig.ccdSubsteps = 32.0f;      // INCREASED: More CCD sub-intervals
     gpuPhysicsConfig.conservativeFactor = 2.0f; // INCREASED: More conservative advancement
     gpuPhysicsConfig.maxVelocity = 15.0f;      // LOWERED: More controlled motion
+    gpuPhysicsConfig.selfCollisionRadius = 0.12f; // MATCH: segmentLength is 0.12, prevents invisible pushing
+    gpuPhysicsConfig.selfCollisionStrength = 1.0f;
     gpuPhysicsConfig.sphereStaticFriction = 0.92f;
     gpuPhysicsConfig.sphereDynamicFriction = 0.20f;
     gpuPhysicsConfig.sphereWrapFactor = 0.80f;
     gpuPhysicsConfig.staticFrictionThreshold = 0.8f;
-    gpuPhysicsConfig.sleepingThreshold = 0.30f;
-    gpuPhysicsConfig.terrainDamping = 0.08f;
+    gpuPhysicsConfig.sleepingThreshold = 0.05f; // Threshold for velocity damping
+    gpuPhysicsConfig.terrainDamping = 0.15f;   // INCREASED: Faster settling on ground
+    gpuPhysicsConfig.airResistance = 0.992f;   // INCREASED resistance (multiplier)
     
     // Update config (shader already compiled with correct iterations in InitializeGL)
     state.physicsWorld.SetConfig(gpuPhysicsConfig);

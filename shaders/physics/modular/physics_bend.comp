@@ -13,7 +13,7 @@ uniform int numBendingConstraints;
 // ============================================================================
 
 void atomicAddVec3(uint baseIdx, vec3 delta) {
-    const float scale = 10000.0;
+    const float scale = 1000000.0;
     atomicAdd(deltaPositions[baseIdx * 3 + 0], int(delta.x * scale));
     atomicAdd(deltaPositions[baseIdx * 3 + 1], int(delta.y * scale));
     atomicAdd(deltaPositions[baseIdx * 3 + 2], int(delta.z * scale));

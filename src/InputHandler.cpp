@@ -95,8 +95,10 @@ void HandleInput(AppState& state, float deltaTime) {
             float startY = cloth->GetStartY();
             float startZ = cloth->GetStartZ();
 
-            // Reset GPU buffers
-            state.physicsWorld.ResetCloth(offset, w, h, startX, startY, startZ, segmentLen, true, (int)i);
+            // Reset GPU buffers with a tiny random offset to break symmetry for natural sliding
+            float randomX = ((float)rand() / (float)RAND_MAX - 0.5f) * 0.15f;
+            float randomZ = ((float)rand() / (float)RAND_MAX - 0.5f) * 0.15f;
+            state.physicsWorld.ResetCloth(offset, w, h, startX + randomX, startY, startZ + randomZ, segmentLen, true, (int)i);
             
             // Reset drop state in AppState
             state.clothDropTimers[i] = 0.0f;

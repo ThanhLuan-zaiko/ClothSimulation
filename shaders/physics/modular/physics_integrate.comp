@@ -24,8 +24,16 @@ void main() {
     velocity += gravity * gravityScale * deltaTime * deltaTime;
     velocity *= airResistance;
 
-    // 3. HARD LIMIT: Prevent velocity explosion
-    float speed = length(velocity);
+    // 3. SLEEPING & SETTLING: Zero out tiny velocities to stop "living organism" behavior
+    float speedSq = dot(velocity, velocity);
+    float dtSq = deltaTime * deltaTime;
+    if (speedSq < sleepingThreshold * sleepingThreshold * dtSq) {
+        velocity *= 0.5; // Aggressive damping near rest
+        if (speedSq < 0.00001 * dtSq) velocity = vec3(0.0);
+    }
+
+    // 4. HARD LIMIT: Prevent velocity explosion
+    float speed = sqrt(speedSq);
     float maxDisp = 0.5; // Max displacement per substep
     if (speed > maxDisp) {
         velocity = (velocity / speed) * maxDisp;
