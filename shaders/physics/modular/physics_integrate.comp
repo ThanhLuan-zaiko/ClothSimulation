@@ -24,24 +24,36 @@ void main() {
     velocity += gravity * gravityScale * deltaTime * deltaTime;
     velocity *= airResistance;
 
-    // 3. SLEEPING & SETTLING: Zero out tiny velocities to stop "living organism" behavior
+    // 3. SMART SLEEPING: Only when truly at rest on surface
     float speedSq = dot(velocity, velocity);
+    float speed = sqrt(speedSq);
     float dtSq = deltaTime * deltaTime;
-    if (speedSq < sleepingThreshold * sleepingThreshold * dtSq) {
-        velocity *= 0.5; // Aggressive damping near rest
-        if (speedSq < 0.00001 * dtSq) velocity = vec3(0.0);
+    
+    // Check if near terrain or sphere
+    float terrainH = getTerrainHeight(x_n.x, x_n.z);
+    float distToTerrain = x_n.y - (terrainH + collisionMargin);
+    vec3 toSphere = x_n - sphereCenter;
+    float distToSphereCenter = length(toSphere);
+    float distToSphere = distToSphereCenter - (sphereRadius + collisionMargin);
+    
+    bool isNearSurface = (distToTerrain >= -0.02 && distToTerrain < 0.04) || 
+                         (distToSphere >= -0.02 && distToSphere < 0.06);
+    
+    // Only sleep if VERY close to surface AND barely moving
+    if (isNearSurface && speed < 0.008) {
+        // Gradual damping - don't kill velocity immediately
+        velocity *= 0.7; // 30% damping, not 95%
+    }
+    // Moderate damping for slightly moving particles  
+    else if (speedSq < sleepingThreshold * sleepingThreshold * dtSq * 0.5) {
+        velocity *= 0.85; // 15% damping only
     }
 
     // 4. HARD LIMIT: Prevent velocity explosion
-    float speed = sqrt(speedSq);
     float maxDisp = 0.5; // Max displacement per substep
     if (speed > maxDisp) {
         velocity = (velocity / speed) * maxDisp;
     }
-
-    // 4. JITTER REDUCTION: Low-pass filter on implicit velocity
-    // If the velocity changed drastically from the solver, damp it.
-    // This kills the 'fighting' energy between solver and integrator.
 
     // 5. Predict next position
     vec3 x_predicted = x_n + velocity;
@@ -49,7 +61,7 @@ void main() {
     // x_n now becomes the 'previous' position for the next substep
     prevPositions[globalIdx].xyz = x_n;
     positions[globalIdx].xyz = x_predicted;
-    
+
     // Reset debug state
     positions[globalIdx].w = 0.0;
 }

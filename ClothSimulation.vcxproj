@@ -237,6 +237,7 @@
     <None Include="shaders\physics\modular\physics_strain_limit.comp" />
     <None Include="shaders\physics\modular\physics_spatial_hash.comp" />
     <None Include="shaders\physics\modular\physics_ccd_solve.comp" />
+    <None Include="shaders\physics\modular\physics_sleep.comp" />
     <None Include="shaders\postprocess\depth_normal.vert" />
     <None Include="shaders\postprocess\depth_normal.frag" />
     <None Include="shaders\postprocess\ssao.comp" />
@@ -276,6 +277,7 @@
     <Copy SourceFiles="$(ProjectDir)shaders\physics\modular\physics_strain_limit.comp" DestinationFiles="$(OutDir)shaders\physics\modular\physics_strain_limit.comp" />
     <Copy SourceFiles="$(ProjectDir)shaders\physics\modular\physics_spatial_hash.comp" DestinationFiles="$(OutDir)shaders\physics\modular\physics_spatial_hash.comp" />
     <Copy SourceFiles="$(ProjectDir)shaders\physics\modular\physics_ccd_solve.comp" DestinationFiles="$(OutDir)shaders\physics\modular\physics_ccd_solve.comp" />
+    <Copy SourceFiles="$(ProjectDir)shaders\physics\modular\physics_sleep.comp" DestinationFiles="$(OutDir)shaders\physics\modular\physics_sleep.comp" />
     <Copy SourceFiles="$(ProjectDir)shaders\postprocess\depth_normal.vert" DestinationFiles="$(OutDir)shaders\postprocess\depth_normal.vert" />
     <Copy SourceFiles="$(ProjectDir)shaders\postprocess\depth_normal.frag" DestinationFiles="$(OutDir)shaders\postprocess\depth_normal.frag" />
     <Copy SourceFiles="$(ProjectDir)shaders\postprocess\ssao.comp" DestinationFiles="$(OutDir)shaders\postprocess\ssao.comp" />

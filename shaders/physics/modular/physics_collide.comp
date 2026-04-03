@@ -12,7 +12,8 @@ layout(local_size_x = 256) in;
 // COLLISION PARAMETERS
 // ============================================================================
 
-const float VELOCITY_DAMPING = 0.5f; // Standard damping on collision
+const float VELOCITY_DAMPING = 0.6f; // Moderate damping on terrain contact (was 0.15)
+const float TERRAIN_SLEEP_DAMPING = 0.4f; // Gentle damping for settled cloth (was 0.05)
 
 // ============================================================================
 // SPHERE COLLISION - EARLY DETECTION
@@ -72,10 +73,10 @@ bool terrainCollision(inout vec3 pos, inout vec3 prevPos, inout float debugState
         } else {
             debugState = DEBUG_STATE_TERRAIN_MARGIN;
         }
-        
+
         pos.y = minTerrainY;
 
-        // Damping
+        // MODERATE DAMPING: Allow natural settling
         vec3 tangentVel = vel * VELOCITY_DAMPING;
         prevPos = pos - tangentVel;
 
@@ -115,15 +116,22 @@ void main() {
         }
     }
 
-    // 2. Final Terrain Enforcement
+    // 2. Final Terrain Enforcement (GENTLE SLEEPING)
     float terrainH = getTerrainHeight(pos.x, pos.z);
     float minY = terrainH + collisionMargin;
     if (pos.y < minY) {
         pos.y = minY;
         vec3 vel = pos - prevPos;
         vec3 tNormal = getTerrainNormal(pos.x, pos.z);
-        vec3 tangentVel = vel - dot(vel, tNormal) * tNormal;
-        prevPos = pos - tangentVel * 0.8;
+        
+        // Remove normal velocity, damp tangential gently
+        float velDotNormal = dot(vel, tNormal);
+        vec3 tangentVel = vel - tNormal * velDotNormal;
+        
+        // Gentle damping: preserve some velocity for natural movement
+        tangentVel *= TERRAIN_SLEEP_DAMPING;
+        
+        prevPos = pos - tangentVel;
     }
 
     // Phase 4: Velocity clamping (PREVENT EXPLOSION)

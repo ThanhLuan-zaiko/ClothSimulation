@@ -115,8 +115,9 @@ void findCollisionPairs() {
                     vec3 delta = otherPos - myPos;
 
                     // Use infinity norm for quick rejection
+                    // INCREASED: Use 2.0x multiplier to catch collisions earlier
                     float infDist = max(abs(delta.x), max(abs(delta.y), abs(delta.z)));
-                    if (infDist > selfCollisionRadius * 1.5f) continue;
+                    if (infDist > selfCollisionRadius * 2.0f) continue;
 
                     // Add collision pair
                     uint pairIdx = atomicAdd(pairCount, 1u);

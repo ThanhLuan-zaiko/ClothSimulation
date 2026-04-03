@@ -164,6 +164,7 @@ private:
     Shader m_BendShader;
     Shader m_ApplyDeltasShader;
     Shader m_CollideShader;
+    Shader m_SleepShader;            // NEW: Sleeping algorithm for settled cloth
     Shader m_CCDSolveShader;         // NEW: CCD with binary search TOI
     Shader m_SpatialHashShader;      // NEW: Spatial hash grid builder
     Shader m_ClearGridShader;

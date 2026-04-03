@@ -248,6 +248,10 @@ bool GPUPhysicsWorld::LoadComputeShaders() {
     m_CollideShader = Shader::CreateComputeShaderFromSource(preprocess("shaders/physics/modular/physics_collide.comp"));
     if (!m_CollideShader.GetID()) return false;
 
+    // NEW: Load sleeping algorithm
+    m_SleepShader = Shader::CreateComputeShaderFromSource(preprocess("shaders/physics/modular/physics_sleep.comp"));
+    if (!m_SleepShader.GetID()) return false;
+
     // NEW: Load CCD solver with binary search TOI
     m_CCDSolveShader = Shader::CreateComputeShaderFromSource(preprocess("shaders/physics/modular/physics_ccd_solve.comp"));
     if (!m_CCDSolveShader.GetID()) return false;
@@ -485,7 +489,7 @@ void GPUPhysicsWorld::Update(float deltaTime) {
     if (!m_Initialized || m_TotalParticles == 0) return;
 
     // 1. Configuration: High frequency for stability (XPBD style)
-    const int numSubsteps = 16; 
+    const int numSubsteps = 24;  // INCREASED: More substeps for better cloth-cloth resolution (was 16)
     const int iterationsPerSubstep = 1;
     float subStepDt = deltaTime / (float)numSubsteps;
     unsigned int numBlocks = (unsigned int)(m_TotalParticles + 255) / 256;
@@ -571,7 +575,7 @@ void GPUPhysicsWorld::Update(float deltaTime) {
             glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
         }
 
-        // Self-collisions (RE-ENABLED)
+        // Self-collisions (ROBUST: Multi-iteration + velocity constraints + thickness)
         m_ResolveShader.Bind();
         glDispatchCompute(numBlocks, 1, 1);
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
@@ -583,6 +587,11 @@ void GPUPhysicsWorld::Update(float deltaTime) {
 
         // Phase D: Static Collision Enforcement (Safety Net)
         m_CollideShader.Bind();
+        glDispatchCompute(numBlocks, 1, 1);
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+        // Phase D2: Sleeping Algorithm (settle cloth on terrain)
+        m_SleepShader.Bind();
         glDispatchCompute(numBlocks, 1, 1);
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
