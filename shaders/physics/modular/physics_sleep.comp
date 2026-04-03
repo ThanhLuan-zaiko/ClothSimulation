@@ -67,24 +67,31 @@ void main() {
     if (idx >= uint(numParticles)) return;
     if (pinnedFlags[idx] >= 0.5f) return;
 
+    // ABSOLUTE PRIORITY: If interacting, skip all sleep logic
+    if (interactionActive) {
+        // Force particles to be awake - zero out sleep timer
+        velocities[idx].w = 0.0;
+        return; // Skip everything else
+    }
+
     vec3 curPos = positions[idx].xyz;
     vec3 prevPos = prevPositions[idx].xyz;
     vec3 velocity = curPos - prevPos;
     float speed = length(velocity);
-    
+
     // Check if near terrain
     float terrainH = getTerrainHeight(curPos.x, curPos.z);
     float distToTerrain = curPos.y - (terrainH + collisionMargin);
     bool isNearTerrain = (distToTerrain >= -0.02 && distToTerrain < TERRAIN_SETTLE_DIST);
-    
+
     // Check if on sphere
     vec3 toSphere = curPos - sphereCenter;
     float distToSphere = length(toSphere) - (sphereRadius + collisionMargin);
     bool isNearSphere = (distToSphere >= -0.02 && distToSphere < SPHERE_SETTLE_DIST);
-    
+
     bool isNearSurface = isNearTerrain || isNearSphere;
     bool isSlow = speed < SLEEP_SPEED_THRESHOLD;
-    
+
     // Sleep only if: near surface + slow + neighbors also settled
     if (isNearSurface && isSlow) {
         velocities[idx].w += deltaTime; // Accumulate settle time

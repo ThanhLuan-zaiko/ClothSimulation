@@ -144,8 +144,12 @@ void Render(AppState& state, const Application& app) {
 
     bool shouldUpdateReflection = false;
 
-    // Update reflection after first 30 frames (reduced from 60 for faster startup)
-    if (frameCount > 30 && state.world.IsTexturesLoaded() && state.reflectionCubemap && state.reflectionNeedsUpdate) {
+    // Force reflection update on first 2 frames to avoid white flash
+    if (frameCount <= 2) {
+        shouldUpdateReflection = true;
+    }
+    // Then check if camera moved or textures loaded
+    else if (state.world.IsTexturesLoaded() && state.reflectionCubemap && state.reflectionNeedsUpdate) {
         // Check if camera moved enough to warrant an update (reduced threshold for smoother reflection)
         float cameraMoveDist = glm::distance(state.camera.GetPosition(), state.lastReflectionUpdatePos);
 
@@ -247,7 +251,7 @@ void Render(AppState& state, const Application& app) {
         // Memory barrier to ensure rendering sees updated cubemap
         glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT);
         } // End shouldUpdateReflection
-    } // End frameCount > 30
+    } // End reflection update check
 
     // Continue MAIN PASS RENDER - Draw terrain, sphere, cloths
     // --- Draw terrain ---
@@ -284,9 +288,9 @@ void Render(AppState& state, const Application& app) {
     }
     state.sphereShader.SetFloat("u_LODBias", lodBias);
 
-    // Bind environment map (reflection cubemap or skybox as fallback)
+    // Bind environment map (reflection cubemap if available, otherwise skybox)
     glActiveTexture(GL_TEXTURE0);
-    if (frameCount > 60 && state.reflectionCubemap && state.reflectionCubemap->GetTextureID() != 0) {
+    if (state.reflectionCubemap && state.reflectionCubemap->GetTextureID() != 0) {
         glBindTexture(GL_TEXTURE_CUBE_MAP, state.reflectionCubemap->GetTextureID());
     } else {
         glBindTexture(GL_TEXTURE_CUBE_MAP, state.world.GetSkybox().GetTextureID());

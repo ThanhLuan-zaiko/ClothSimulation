@@ -12,6 +12,7 @@ void main() {
     uint globalIdx = gl_GlobalInvocationID.x;
     if (globalIdx >= uint(numParticles)) return;
 
+    // If pinned AND NOT interacting, skip completely
     if (pinnedFlags[globalIdx] >= 0.5f) return;
 
     vec3 x_n = positions[globalIdx].xyz;
@@ -24,28 +25,53 @@ void main() {
     velocity += gravity * gravityScale * deltaTime * deltaTime;
     velocity *= airResistance;
 
+    // MOUSE INTERACTION: Area-based pull for natural cloth movement
+    if (interactionActive) {
+        vec3 toInteraction = interactionPos - x_n;
+        float interactionDist = length(toInteraction);
+        
+        // Pull with LARGE radius (3 meters) for natural cloth deformation
+        if (interactionDist < 3.0) {
+            // Close particles get strong pull, far particles get gentle pull
+            float pullStrength = 0.3 * (1.0 - interactionDist / 3.0);
+            pullStrength = clamp(pullStrength, 0.0, 0.5);
+            
+            x_n += normalize(toInteraction) * pullStrength;
+        }
+        // VERY close particles get DIRECT pull
+        if (interactionDist < 1.0) {
+            float directPull = 0.4 * (1.0 - interactionDist / 1.0);
+            x_n = mix(x_n, interactionPos, directPull);
+        }
+        
+        // Prevent fighting with physics during interaction
+        if (interactionDist < 3.0) {
+            velocity = vec3(0.0);
+        }
+    }
+
     // 3. SMART SLEEPING: Only when truly at rest on surface
     float speedSq = dot(velocity, velocity);
     float speed = sqrt(speedSq);
     float dtSq = deltaTime * deltaTime;
-    
+
     // Check if near terrain or sphere
     float terrainH = getTerrainHeight(x_n.x, x_n.z);
     float distToTerrain = x_n.y - (terrainH + collisionMargin);
     vec3 toSphere = x_n - sphereCenter;
     float distToSphereCenter = length(toSphere);
     float distToSphere = distToSphereCenter - (sphereRadius + collisionMargin);
-    
-    bool isNearSurface = (distToTerrain >= -0.02 && distToTerrain < 0.04) || 
+
+    bool isNearSurface = (distToTerrain >= -0.02 && distToTerrain < 0.04) ||
                          (distToSphere >= -0.02 && distToSphere < 0.06);
-    
-    // Only sleep if VERY close to surface AND barely moving
-    if (isNearSurface && speed < 0.008) {
+
+    // Only sleep if NOT interacting AND near surface AND barely moving
+    if (!interactionActive && isNearSurface && speed < 0.008) {
         // Gradual damping - don't kill velocity immediately
         velocity *= 0.7; // 30% damping, not 95%
     }
-    // Moderate damping for slightly moving particles  
-    else if (speedSq < sleepingThreshold * sleepingThreshold * dtSq * 0.5) {
+    // Moderate damping for slightly moving particles
+    else if (!interactionActive && speedSq < sleepingThreshold * sleepingThreshold * dtSq * 0.5) {
         velocity *= 0.85; // 15% damping only
     }
 

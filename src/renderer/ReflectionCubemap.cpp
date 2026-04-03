@@ -1,5 +1,6 @@
 #include "ReflectionCubemap.h"
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/type_ptr.hpp>
 #include <iostream>
 
 // Define anisotropic filtering constants if not available
@@ -81,7 +82,7 @@ ReflectionCubemap::~ReflectionCubemap() {
 void ReflectionCubemap::InitializeWithSkybox(unsigned int skyboxTextureID) {
     if (!m_Initialized || skyboxTextureID == 0) return;
 
-    std::cout << "[Reflection] Initializing cubemap with skybox texture..." << std::endl;
+    std::cout << "[Reflection] Initializing cubemap with sky color..." << std::endl;
 
     // Save current state
     GLint currentFBO;
@@ -93,18 +94,19 @@ void ReflectionCubemap::InitializeWithSkybox(unsigned int skyboxTextureID) {
     glBindFramebuffer(GL_FRAMEBUFFER, m_FBO);
     glViewport(0, 0, m_Size, m_Size);
 
-    // Disable depth test for skybox copy
+    // Disable depth test
     glDisable(GL_DEPTH_TEST);
 
-    // Simple sky color based on average skybox color (light blue-gray)
-    glm::vec3 skyColor = glm::vec3(0.5f, 0.55f, 0.6f);
+    // Sky blue color that matches typical skybox (light blue with slight gradient)
+    // This will be the initial reflection color until real reflection updates
+    glm::vec3 skyColor = glm::vec3(0.45f, 0.65f, 0.85f); // Nice sky blue
 
     // Fill each face with sky color
     for (unsigned int i = 0; i < 6; i++) {
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                                GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, m_CubemapTexture, 0);
         glClearColor(skyColor.r, skyColor.g, skyColor.b, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glClear(GL_COLOR_BUFFER_BIT);
     }
 
     // Restore state
@@ -112,7 +114,7 @@ void ReflectionCubemap::InitializeWithSkybox(unsigned int skyboxTextureID) {
     glBindFramebuffer(GL_FRAMEBUFFER, currentFBO);
     glViewport(currentViewport[0], currentViewport[1], currentViewport[2], currentViewport[3]);
 
-    std::cout << "[Reflection] Cubemap initialized with sky color" << std::endl;
+    std::cout << "[Reflection] Cubemap initialized with sky blue color" << std::endl;
 }
 
 void ReflectionCubemap::BeginRender() {

@@ -143,6 +143,37 @@ void main() {
         curVel = normalize(curVel) * maxVel;
         pos = prevPos + curVel;
     }
+    
+    // ========================================================================
+    // ABSOLUTE FINAL STEP: Mouse Interaction (Overrides Everything)
+    // This runs AFTER all collision enforcement, so it always wins
+    // ========================================================================
+    if (interactionActive) {
+        vec3 toInteraction = interactionPos - pos;
+        float interactionDist = length(toInteraction);
+        
+        // LARGE AREA pull for visible cloth deformation
+        if (interactionDist < 8.0 && interactionDist > 0.001) {
+            // STRONG direct pull with large radius - creates visible clump
+            float pullStrength = 0.6 * pow(1.0 - interactionDist / 8.0, 1.5);
+            pos = mix(pos, interactionPos, pullStrength);
+            
+            // Zero velocity to prevent fighting
+            prevPos = pos;
+        }
+        // MID range particles get moderate pull (creates larger visible bulge)
+        if (interactionDist < 4.0) {
+            float midPull = 0.75 * (1.0 - interactionDist / 4.0);
+            pos = mix(pos, interactionPos, midPull);
+            prevPos = pos;
+        }
+        // VERY close particles get ABSOLUTE pull
+        if (interactionDist < 2.0) {
+            float directPull = 0.85 * (1.0 - interactionDist / 2.0);
+            pos = mix(pos, interactionPos, directPull);
+            prevPos = pos;
+        }
+    }
 
     positions[globalIdx].xyz = pos;
     prevPositions[globalIdx].xyz = prevPos;

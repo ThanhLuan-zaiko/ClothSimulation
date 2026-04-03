@@ -22,7 +22,21 @@ void HandleInput(AppState& state, float deltaTime) {
     double mouseY = Input::GetMouseY();
     
     // Check for Interaction mode (E key)
+    bool prevIsInteracting = state.isInteracting;
     state.isInteracting = Input::IsKeyPressed(GLFW_KEY_E);
+
+    // Force wake up particles when interaction STARTS
+    if (state.isInteracting && !prevIsInteracting) {
+        // Wake up ALL cloth particles (even if not dropped yet)
+        for (size_t i = 0; i < state.cloths.size(); i++) {
+            // Unpin AND wake up
+            if (state.clothDropped[i] || state.clothDropTimers[i] > 0.5f) {
+                size_t offset = state.clothParticleOffsets[i];
+                size_t count = state.clothParticleCounts[i];
+                state.physicsWorld.SetParticlesPinned(offset, count, false);
+            }
+        }
+    }
 
     if (state.isInteracting) {
         // Calculate interaction world position
@@ -41,26 +55,30 @@ void HandleInput(AppState& state, float deltaTime) {
 
         glm::vec3 rayDir = glm::normalize(worldFar - worldNear);
         glm::vec3 rayOrigin = state.camera.GetPosition();
-
-        // ACCURATE 3D PICKING: Read depth buffer at mouse position
-        float depth = 1.0f;
-        glReadPixels((int)mouseX, viewport[3] - (int)mouseY, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &depth);
-
-        float targetDistance = 0.0f;
-        if (depth < 1.0f) {
-            // If we hit SOMETHING (cloth, sphere, or ground), use that exact depth
-            glm::vec3 win(mouseX, (float)viewport[3] - mouseY, depth);
-            state.interactionWorldPos = glm::unProject(win, view, proj, glm::vec4(0, 0, viewport[2], viewport[3]));
-        } else {
-            // FALLBACK: If pointing at sky, use previous logic
-            if (rayDir.y < -0.05f) {
-                targetDistance = -rayOrigin.y / rayDir.y;
-                targetDistance = glm::clamp(targetDistance, 1.0f, 100.0f);
-            } else {
-                targetDistance = glm::distance(rayOrigin, state.mirrorSphere.GetPosition());
+        
+        // DYNAMIC distance based on camera-to-cloth distance
+        glm::vec3 avgClothPos(0.0f);
+        for (size_t i = 0; i < state.clothMeshes.size(); i++) {
+            // Get approximate center of first cloth as reference
+            if (state.clothParticleOffsets.size() > i) {
+                // Use cloth starting position as rough estimate
+                avgClothPos += state.mirrorSphere.GetPosition(); // Sphere is at center
             }
-            state.interactionWorldPos = rayOrigin + rayDir * targetDistance;
         }
+        float cameraToClothDist = glm::distance(rayOrigin, avgClothPos);
+        
+        // Target distance scales with camera distance
+        float targetDistance;
+        if (rayDir.y < -0.1f) {
+            // Pointing down: intersect with ground or cloth height
+            targetDistance = -rayOrigin.y / rayDir.y;
+            targetDistance = glm::clamp(targetDistance, 1.0f, 25.0f);
+        } else {
+            // Pointing up or horizontal: use camera-to-cloth distance
+            targetDistance = glm::clamp(cameraToClothDist * 1.2f, 5.0f, 25.0f);
+        }
+        
+        state.interactionWorldPos = rayOrigin + rayDir * targetDistance;
 
         // Visual feedback
     } else if (Input::IsMouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT)) {
