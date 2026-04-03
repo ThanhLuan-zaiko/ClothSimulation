@@ -488,8 +488,8 @@ void GPUPhysicsWorld::SetParticlesPinned(size_t start, size_t count, bool pinned
 void GPUPhysicsWorld::Update(float deltaTime) {
     if (!m_Initialized || m_TotalParticles == 0) return;
 
-    // 1. Configuration: High frequency for stability (XPBD style)
-    const int numSubsteps = 24;  // INCREASED: More substeps for better cloth-cloth resolution (was 16)
+    // 1. Configuration: Balanced substeps for performance + stability
+    const int numSubsteps = 24;
     const int iterationsPerSubstep = 1;
     float subStepDt = deltaTime / (float)numSubsteps;
     unsigned int numBlocks = (unsigned int)(m_TotalParticles + 255) / 256;
@@ -575,7 +575,7 @@ void GPUPhysicsWorld::Update(float deltaTime) {
             glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
         }
 
-        // Self-collisions (ROBUST: Multi-iteration + velocity constraints + thickness)
+        // Self-collisions (PAIR-BASED ONLY - optimized)
         m_ResolveShader.Bind();
         glDispatchCompute(numBlocks, 1, 1);
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);

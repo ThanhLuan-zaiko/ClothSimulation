@@ -9,18 +9,57 @@ layout(local_size_x = 256) in;
 #include "physics_common.glsl"
 
 // ============================================================================
-// SLEEPING ALGORITHM - Complete Rest for Settled Cloth
+// NEIGHBOR-AWARE SLEEP ALGORITHM
+// Checks if particle AND its neighbors are settled before locking
+// Prevents premature sleep and ensures complete immobilization
 // ============================================================================
 
-const float SLEEP_VELOCITY_THRESHOLD = 0.003;    // Very low velocity threshold (m/s)
-const float SLEEP_DAMPING = 0.15;                 // Aggressive damping when near rest (0-1)
-const float TERRAIN_SETTLE_DISTANCE = 0.02;       // Distance to terrain to be considered settled (m)
-const float CLOTH_SETTLE_TIME = 0.5;              // Time before sleeping kicks in (seconds)
-const float MIN_VELOCITY_FOR_WAKEUP = 0.05;       // Velocity needed to wake up
+const float SLEEP_SPEED_THRESHOLD = 0.003;   // Speed threshold to consider sleeping
+const float TERRAIN_SETTLE_DIST = 0.05;       // Distance to terrain to be "settled"
+const float SPHERE_SETTLE_DIST = 0.07;        // Distance to sphere to be "settled"
+const float SLEEP_SETTLE_TIME = 0.2;          // Time before full sleep
+const float DAMPING_PRE_SLEEP = 0.25;         // Strong damping before sleep
+const float NEIGHBOR_CHECK_RADIUS = 0.15;     // Radius to check neighbor stability
 
 // ============================================================================
-// SLEEP STATE (stored in a persistent per-particle counter)
-// We use velocities.w as a "settle timer" - how long particle has been still
+// CHECK IF NEIGHBORS ARE ALSO SETTLED
+// ============================================================================
+
+bool areNeighborsSettled(vec3 pos, float myClothID) {
+    int settledCount = 0;
+    int neighborCount = 0;
+    
+    uint pairCount = sortTemp[numParticles + 8192];
+    uint checks = min(pairCount, 80u); // Limit checks for performance
+    
+    for (uint i = 0; i < checks; i++) {
+        uvec2 pair = collisionPairs[i];
+        for (int j = 0; j < 2; j++) {
+            uint otherIdx = (j == 0) ? pair.x : pair.y;
+            float otherClothID = prevPositions[otherIdx].w;
+            
+            // Only check same-cloth neighbors
+            if (abs(otherClothID - myClothID) < 0.1) {
+                vec3 otherPos = positions[otherIdx].xyz;
+                if (distance(pos, otherPos) < NEIGHBOR_CHECK_RADIUS) {
+                    neighborCount++;
+                    
+                    // Check if neighbor is also slow
+                    vec3 otherVel = positions[otherIdx].xyz - prevPositions[otherIdx].xyz;
+                    if (length(otherVel) < SLEEP_SPEED_THRESHOLD * 2.0) {
+                        settledCount++;
+                    }
+                }
+            }
+        }
+    }
+    
+    // If most neighbors are settled, return true
+    return (neighborCount >= 2) && (settledCount >= neighborCount / 2);
+}
+
+// ============================================================================
+// MAIN
 // ============================================================================
 
 void main() {
@@ -30,62 +69,47 @@ void main() {
 
     vec3 curPos = positions[idx].xyz;
     vec3 prevPos = prevPositions[idx].xyz;
-    
-    // Calculate current velocity
     vec3 velocity = curPos - prevPos;
     float speed = length(velocity);
     
-    // Check if on terrain (within settle distance)
+    // Check if near terrain
     float terrainH = getTerrainHeight(curPos.x, curPos.z);
     float distToTerrain = curPos.y - (terrainH + collisionMargin);
-    bool isNearTerrain = (distToTerrain >= -0.02 && distToTerrain < 0.03);
+    bool isNearTerrain = (distToTerrain >= -0.02 && distToTerrain < TERRAIN_SETTLE_DIST);
     
     // Check if on sphere
     vec3 toSphere = curPos - sphereCenter;
-    float distToSphereCenter = length(toSphere);
-    float distToSphere = distToSphereCenter - (sphereRadius + collisionMargin);
-    bool isNearSphere = (distToSphere >= -0.02 && distToSphere < 0.05);
+    float distToSphere = length(toSphere) - (sphereRadius + collisionMargin);
+    bool isNearSphere = (distToSphere >= -0.02 && distToSphere < SPHERE_SETTLE_DIST);
     
     bool isNearSurface = isNearTerrain || isNearSphere;
+    bool isSlow = speed < SLEEP_SPEED_THRESHOLD;
     
-    // CRITICAL: Only sleep if ACTUALLY settled (not falling)
-    // Must be near surface AND moving VERY slowly for a sustained period
-    bool isPotentiallySettled = isNearSurface && speed < SLEEP_VELOCITY_THRESHOLD;
-    
-    // Update settle timer (use velocities.w as timer)
-    if (isPotentiallySettled) {
-        // Increment settle timer
-        velocities[idx].w += deltaTime;
+    // Sleep only if: near surface + slow + neighbors also settled
+    if (isNearSurface && isSlow) {
+        velocities[idx].w += deltaTime; // Accumulate settle time
         
-        // Only apply sleep after sustained settling (prevents premature sleep)
-        if (velocities[idx].w > CLOTH_SETTLE_TIME) {
-            // SLEEP MODE: Gradual damping based on how settled
-            float settleProgress = min((velocities[idx].w - CLOTH_SETTLE_TIME) * 2.0, 1.0);
-            float currentDamping = mix(1.0, SLEEP_DAMPING, settleProgress);
+        float settleTime = velocities[idx].w;
+        
+        if (settleTime > SLEEP_SETTLE_TIME && areNeighborsSettled(curPos, prevPositions[idx].w)) {
+            // FULL SLEEP: Complete lock
+            positions[idx].xyz = curPos;
+            prevPositions[idx].xyz = curPos;
+            velocities[idx].xyz = vec3(0.0);
+            velocities[idx].w = SLEEP_SETTLE_TIME * 3.0; // Stay asleep
             
-            velocity *= currentDamping;
-            
-            // Complete sleep only when virtually motionless
-            if (speed < SLEEP_VELOCITY_THRESHOLD * 0.3 && settleProgress > 0.8) {
-                velocity = vec3(0.0);
-                prevPos = curPos;
-                positions[idx].xyz = curPos;
-                prevPositions[idx].xyz = curPos;
-            } else {
-                prevPositions[idx].xyz = curPos - velocity;
-            }
-            
-            // Debug color
-            if (speed < 0.001) {
-                setParticleColor(idx, DEBUG_COLOR_SLEEPING);
-            }
+            setParticleColor(idx, DEBUG_COLOR_SLEEPING);
         } else {
-            // Still building settle time - light damping
-            velocity *= 0.95;
+            // PRE-SLEEP: Strong damping
+            float progress = min(settleTime / SLEEP_SETTLE_TIME, 1.0);
+            float sleepDamping = mix(DAMPING_PRE_SLEEP, 0.0, progress);
+            
+            velocity *= sleepDamping;
             prevPositions[idx].xyz = curPos - velocity;
+            velocities[idx].xyz = velocity;
         }
     } else {
-        // NOT SETTLED: Reset timer immediately
+        // NOT SETTLED: Reset immediately
         velocities[idx].w = 0.0;
         velocities[idx].xyz = velocity;
     }

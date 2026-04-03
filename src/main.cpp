@@ -177,8 +177,8 @@ int main() {
     gpuPhysicsConfig.ccdSubsteps = 32.0f;      // INCREASED: More CCD sub-intervals
     gpuPhysicsConfig.conservativeFactor = 2.0f; // INCREASED: More conservative advancement
     gpuPhysicsConfig.maxVelocity = 15.0f;      // LOWERED: More controlled motion
-    gpuPhysicsConfig.selfCollisionRadius = 0.22f; // INCREASED: Stronger collision detection radius (was 0.18f)
-    gpuPhysicsConfig.selfCollisionStrength = 2.5f; // INCREASED: Much stronger repulsion (was 1.8f)
+    gpuPhysicsConfig.selfCollisionRadius = 0.18f; // Moderate radius for stability
+    gpuPhysicsConfig.selfCollisionStrength = 2.0f; // Moderate strength - let algorithm handle it
     gpuPhysicsConfig.sphereStaticFriction = 0.92f;
     gpuPhysicsConfig.sphereDynamicFriction = 0.20f;
     gpuPhysicsConfig.sphereWrapFactor = 0.80f;

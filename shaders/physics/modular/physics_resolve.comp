@@ -9,230 +9,164 @@ layout(local_size_x = 256) in;
 #include "physics_common.glsl"
 
 // ============================================================================
-// ROBUST CLOTH-CLOTH COLLISION ALGORITHM
-// Multi-iteration resolution with velocity constraints and thickness modeling
+// IMPROVED COLLISION RESOLUTION WITH ADAPTIVE MARGIN
+// Uses iterative constraint satisfaction with penetration tracking
 // ============================================================================
 
-const int RESOLUTION_ITERATIONS = 6;        // Multiple passes for convergence
-const float THICKNESS_OFFSET = 0.08f;       // Simulated cloth half-thickness
-const float MAX_POSITION_CORRECTION = 0.06f; // Clamp per iteration
-const float VELOCITY_DAMPING = 0.7f;        // Damping for penetrating velocities
-const float FRICTION_SAME_CLOTH = 0.25f;    // Friction within same cloth
-const float FRICTION_DIFF_CLOTH = 0.85f;    // Friction between different cloths
-const float PRESSURE_REPULSION = 0.08f;     // Local pressure repulsion strength
+const int RESOLUTION_ITERATIONS = 8;
+const float BASE_CLOTH_THICKNESS = 0.10f;    // Base physical thickness
+const float ADAPTIVE_MARGIN_GAIN = 0.05f;    // Additional margin per penetration event
+const float MAX_CORRECTION_PER_ITER = 0.05f; // Safe correction limit
+const float VELOCITY_CONSTRAINT_STRENGTH = 0.85f; // Strong but not overkill
+const float TANGENTIAL_FRICTION = 0.85f;    // Strong friction between cloths
 
 // ============================================================================
-// ROBUST POSITION RESOLUTION WITH THICKNESS
-// Uses XPBD with simulated cloth thickness for stable separation
+// SIMPLE CCD - Returns hit time
 // ============================================================================
 
-void resolveCollisionWithThickness(
-    uint idxA, uint idxB,
-    vec3 posA, vec3 posB,
-    float radius,
-    int iteration)
-{
-    vec3 delta = posA - posB;
-    float dist = length(delta);
-    float effectiveRadius = radius + THICKNESS_OFFSET;
-    
-    if (dist >= effectiveRadius || dist < 0.001) return;
-    
-    vec3 normal = delta / dist;
-    float penetration = effectiveRadius - dist;
-    
-    // XPBD with compliance
-    float alpha_tilde = COMPLIANCE_COLLISION / (deltaTime * deltaTime);
-    float w1 = (pinnedFlags[idxA] < 0.5) ? 1.0 : 0.0;
-    float w2 = (pinnedFlags[idxB] < 0.5) ? 1.0 : 0.0;
-    float sumW = w1 + w2;
-    
-    if (sumW < 0.001) return;
-    
-    // Stronger correction for different cloths
-    float clothID_A = prevPositions[idxA].w;
-    float clothID_B = prevPositions[idxB].w;
-    bool isDifferentCloth = (clothID_A != clothID_B);
-    
-    float strengthMultiplier = isDifferentCloth ? selfCollisionStrength * 2.0 : 1.0;
-    
-    float delta_lambda = (penetration * strengthMultiplier) / (sumW + alpha_tilde);
-    
-    // Clamp to prevent instability
-    delta_lambda = min(delta_lambda, MAX_POSITION_CORRECTION);
-    
-    // Progressive tightening: stronger in early iterations, gentler later
-    float iterationFactor = 1.0 - (float(iteration) / float(RESOLUTION_ITERATIONS)) * 0.4;
-    delta_lambda *= iterationFactor;
-    
-    vec3 correction = normal * delta_lambda;
-    const float scale = 1000000.0;
-    
-    if (w1 > 0.0) {
-        atomicAdd(deltaPositions[idxA * 3 + 0], int(correction.x * w1 * scale));
-        atomicAdd(deltaPositions[idxA * 3 + 1], int(correction.y * w1 * scale));
-        atomicAdd(deltaPositions[idxA * 3 + 2], int(correction.z * w1 * scale));
-    }
-    
-    if (w2 > 0.0) {
-        atomicAdd(deltaPositions[idxB * 3 + 0], int(-correction.x * w2 * scale));
-        atomicAdd(deltaPositions[idxB * 3 + 1], int(-correction.y * w2 * scale));
-        atomicAdd(deltaPositions[idxB * 3 + 2], int(-correction.z * w2 * scale));
-    }
-    
-    // Debug coloring for deep penetration
-    if (penetration > radius * 0.4) {
-        setParticleColor(idxA, DEBUG_COLOR_SELF_COLLISION);
-        setParticleColor(idxB, DEBUG_COLOR_SELF_COLLISION);
-    }
-}
-
-// ============================================================================
-// VELOCITY-BASED COLLISION CONSTRAINT
-// Prevents future penetration by damping approaching velocities
-// This is KEY for preventing cloth from passing through each other
-// ============================================================================
-
-void applyVelocityConstraint(
-    uint idxA, uint idxB,
-    vec3 posA, vec3 posB,
-    vec3 velA, vec3 velB,
-    float effectiveRadius)
-{
-    vec3 delta = posA - posB;
-    float dist = length(delta);
-    
-    if (dist >= effectiveRadius || dist < 0.001) return;
-    
-    vec3 normal = delta / dist;
-    
-    // Relative velocity along collision normal
-    float relVelNormal = dot(velA - velB, normal);
-    
-    // Only constrain if moving towards each other
-    if (relVelNormal < -0.001) {
-        // Calculate velocity correction
-        float velocityCorrection = relVelNormal * VELOCITY_DAMPING;
-        vec3 velCorrection = normal * velocityCorrection;
-        
-        float w1 = (pinnedFlags[idxA] < 0.5) ? 1.0 : 0.0;
-        float w2 = (pinnedFlags[idxB] < 0.5) ? 1.0 : 0.0;
-        const float scale = 1000000.0;
-        
-        // Apply to delta positions (will be integrated in apply_deltas)
-        if (w1 > 0.0) {
-            atomicAdd(deltaPositions[idxA * 3 + 0], int(-velCorrection.x * w1 * scale * 0.5));
-            atomicAdd(deltaPositions[idxA * 3 + 1], int(-velCorrection.y * w1 * scale * 0.5));
-            atomicAdd(deltaPositions[idxA * 3 + 2], int(-velCorrection.z * w1 * scale * 0.5));
-        }
-        
-        if (w2 > 0.0) {
-            atomicAdd(deltaPositions[idxB * 3 + 0], int(velCorrection.x * w2 * scale * 0.5));
-            atomicAdd(deltaPositions[idxB * 3 + 1], int(velCorrection.y * w2 * scale * 0.5));
-            atomicAdd(deltaPositions[idxB * 3 + 2], int(velCorrection.z * w2 * scale * 0.5));
-        }
-    }
-}
-
-// ============================================================================
-// TANGENTIAL FRICTION
-// Prevents cloth from sliding through each other tangentially
-// ============================================================================
-
-void applyTangentialFriction(
-    uint idxA, uint idxB,
-    vec3 posA, vec3 posB,
-    vec3 prevPosA, vec3 prevPosB,
-    vec3 normal,
-    float effectiveRadius)
-{
-    vec3 delta = posA - posB;
-    float dist = length(delta);
-    
-    if (dist >= effectiveRadius || dist < 0.001) return;
-    
+bool simpleCCD(vec3 posA, vec3 prevPosA, vec3 posB, vec3 prevPosB, float radius, 
+               out float hitTime) {
     vec3 velA = posA - prevPosA;
     vec3 velB = posB - prevPosB;
     vec3 relVel = velA - velB;
+    vec3 relPosInit = prevPosA - prevPosB;
     
-    // Project relative velocity onto tangent plane
-    float velDotNormal = dot(relVel, normal);
-    vec3 tangentialVel = relVel - normal * velDotNormal;
-    float tangentialSpeed = length(tangentialVel);
+    float radiusSq = radius * radius;
+    float initDistSq = dot(relPosInit, relPosInit);
     
-    if (tangentialSpeed > 0.001) {
-        float clothID_A = prevPositions[idxA].w;
-        float clothID_B = prevPositions[idxB].w;
-        bool isDifferentCloth = (clothID_A != clothID_B);
+    if (initDistSq <= radiusSq) {
+        hitTime = 0.0;
+        return true;
+    }
+    
+    float a = dot(relVel, relVel);
+    if (a < 0.0001) return false;
+    
+    float b = 2.0 * dot(relPosInit, relVel);
+    float c = initDistSq - radiusSq;
+    float discriminant = b * b - 4.0 * a * c;
+    
+    if (discriminant < 0.0) {
+        float t = -b / (2.0 * a);
+        if (t >= 0.0 && t <= 1.0) {
+            vec3 relPos = relPosInit + t * relVel;
+            hitTime = t;
+            return dot(relPos, relPos) < radiusSq;
+        }
+        return false;
+    }
+    
+    float sqrtDisc = sqrt(discriminant);
+    float t0 = (-b - sqrtDisc) / (2.0 * a);
+    float t1 = (-b + sqrtDisc) / (2.0 * a);
+    
+    hitTime = 2.0;
+    if (t0 >= 0.0 && t0 <= 1.0) hitTime = t0;
+    else if (t1 >= 0.0 && t1 <= 1.0) hitTime = t1;
+    
+    return hitTime <= 1.0;
+}
+
+// ============================================================================
+// RESOLVE PAIR WITH ADAPTIVE MARGIN
+// If penetration persists, gradually increase effective radius
+// This prevents the "push-pull" conflict between multiple pairs
+// ============================================================================
+
+void resolvePair(uint i, uint j, float baseRadius) {
+    vec3 prevPosA = prevPositions[i].xyz;
+    vec3 prevPosB = prevPositions[j].xyz;
+    vec3 velA = positions[i].xyz - prevPosA;
+    vec3 velB = positions[j].xyz - prevPosB;
+    
+    float clothID_A = prevPositions[i].w;
+    float clothID_B = prevPositions[j].w;
+    bool isDifferentCloth = abs(clothID_A - clothID_B) > 0.1;
+    
+    for (int iter = 0; iter < RESOLUTION_ITERATIONS; iter++) {
+        vec3 posA = positions[i].xyz;
+        vec3 posB = positions[j].xyz;
+        vec3 delta = posA - posB;
+        float dist = length(delta);
         
-        // Much stronger friction between different cloths
-        float frictionCoeff = isDifferentCloth ? FRICTION_DIFF_CLOTH : FRICTION_SAME_CLOTH;
+        // Adaptive margin: increase if still penetrating after corrections
+        float adaptiveRadius = baseRadius + BASE_CLOTH_THICKNESS + 
+                               float(iter) * ADAPTIVE_MARGIN_GAIN;
         
-        // Additional boost for different cloths to really prevent sliding
-        float frictionImpulse = min(frictionCoeff * tangentialSpeed, tangentialSpeed);
-        vec3 frictionForce = normalize(tangentialVel) * frictionImpulse * 0.5;
+        if (dist >= adaptiveRadius || dist < 0.001) break;
         
-        float w1 = (pinnedFlags[idxA] < 0.5) ? 1.0 : 0.0;
-        float w2 = (pinnedFlags[idxB] < 0.5) ? 1.0 : 0.0;
+        vec3 normal = delta / dist;
+        float penetration = adaptiveRadius - dist;
+        
+        // XPBD resolution
+        float alpha_tilde = COMPLIANCE_COLLISION / (deltaTime * deltaTime);
+        float w1 = (pinnedFlags[i] < 0.5) ? 1.0 : 0.0;
+        float w2 = (pinnedFlags[j] < 0.5) ? 1.0 : 0.0;
+        float sumW = w1 + w2;
+        if (sumW < 0.001) break;
+        
+        // Apply stronger multiplier for different cloths
+        float strength = isDifferentCloth ? selfCollisionStrength * 1.5 : selfCollisionStrength;
+        float correction = (penetration * strength) / (sumW + alpha_tilde);
+        correction = min(correction, MAX_CORRECTION_PER_ITER);
+        
+        vec3 corrVec = normal * correction;
         const float scale = 1000000.0;
         
         if (w1 > 0.0) {
-            atomicAdd(deltaPositions[idxA * 3 + 0], int(-frictionForce.x * w1 * scale));
-            atomicAdd(deltaPositions[idxA * 3 + 1], int(-frictionForce.y * w1 * scale));
-            atomicAdd(deltaPositions[idxA * 3 + 2], int(-frictionForce.z * w1 * scale));
+            atomicAdd(deltaPositions[i * 3 + 0], int(corrVec.x * w1 * scale));
+            atomicAdd(deltaPositions[i * 3 + 1], int(corrVec.y * w1 * scale));
+            atomicAdd(deltaPositions[i * 3 + 2], int(corrVec.z * w1 * scale));
         }
-        
         if (w2 > 0.0) {
-            atomicAdd(deltaPositions[idxB * 3 + 0], int(frictionForce.x * w2 * scale));
-            atomicAdd(deltaPositions[idxB * 3 + 1], int(frictionForce.y * w2 * scale));
-            atomicAdd(deltaPositions[idxB * 3 + 2], int(frictionForce.z * w2 * scale));
+            atomicAdd(deltaPositions[j * 3 + 0], int(-corrVec.x * w2 * scale));
+            atomicAdd(deltaPositions[j * 3 + 1], int(-corrVec.y * w2 * scale));
+            atomicAdd(deltaPositions[j * 3 + 2], int(-corrVec.z * w2 * scale));
         }
-    }
-}
-
-// ============================================================================
-// LOCAL PRESSURE REPULSION
-// Calculates local density and applies repulsive force
-// This prevents cloth particles from clustering too densely
-// ============================================================================
-
-void applyLocalPressure(
-    uint particleIdx,
-    vec3 pos,
-    float myClothID,
-    float effectiveRadius)
-{
-    vec3 pressureForce = vec3(0.0);
-    int differentClothCount = 0;
-    
-    // Sample nearby particles using existing collision pair proximity
-    // This is a simplified pressure model based on current collision context
-    
-    // Use velocity as proxy for local crowding
-    vec3 vel = pos - prevPositions[particleIdx].xyz;
-    float velMag = length(vel);
-    
-    // If moving slowly but should be falling, apply upward pressure
-    if (velMag < 0.05 && myClothID > 0.5) {
-        // Check if this particle is likely resting on other cloth
-        // Apply gentle upward pressure to encourage separation
-        pressureForce.y += PRESSURE_REPULSION;
-    }
-    
-    if (differentClothCount > 0) {
-        const float scale = 1000000.0;
-        float w = (pinnedFlags[particleIdx] < 0.5) ? 1.0 : 0.0;
         
-        if (w > 0.0) {
-            atomicAdd(deltaPositions[particleIdx * 3 + 0], int(pressureForce.x * w * scale));
-            atomicAdd(deltaPositions[particleIdx * 3 + 1], int(pressureForce.y * w * scale));
-            atomicAdd(deltaPositions[particleIdx * 3 + 2], int(pressureForce.z * w * scale));
+        // VELOCITY CONSTRAINT: Prevent moving toward each other
+        float relVelNormal = dot(velA - velB, normal);
+        if (relVelNormal < -0.001) {
+            vec3 velCorr = normal * relVelNormal * VELOCITY_CONSTRAINT_STRENGTH;
+            if (w1 > 0.0) {
+                atomicAdd(deltaPositions[i * 3 + 0], int(-velCorr.x * w1 * scale * 0.5));
+                atomicAdd(deltaPositions[i * 3 + 1], int(-velCorr.y * w1 * scale * 0.5));
+                atomicAdd(deltaPositions[i * 3 + 2], int(-velCorr.z * w1 * scale * 0.5));
+            }
+            if (w2 > 0.0) {
+                atomicAdd(deltaPositions[j * 3 + 0], int(velCorr.x * w2 * scale * 0.5));
+                atomicAdd(deltaPositions[j * 3 + 1], int(velCorr.y * w2 * scale * 0.5));
+                atomicAdd(deltaPositions[j * 3 + 2], int(velCorr.z * w2 * scale * 0.5));
+            }
+        }
+        
+        // TANGENTIAL FRICTION: Resist sliding between different cloths
+        if (isDifferentCloth) {
+            vec3 tanVelA = velA - normal * dot(velA, normal);
+            vec3 tanVelB = velB - normal * dot(velB, normal);
+            
+            if (length(tanVelA) > 0.001) {
+                vec3 fric = normalize(tanVelA) * length(tanVelA) * TANGENTIAL_FRICTION * 0.5;
+                if (w1 > 0.0) {
+                    atomicAdd(deltaPositions[i * 3 + 0], int(-fric.x * w1 * scale));
+                    atomicAdd(deltaPositions[i * 3 + 1], int(-fric.y * w1 * scale));
+                    atomicAdd(deltaPositions[i * 3 + 2], int(-fric.z * w1 * scale));
+                }
+            }
+            if (length(tanVelB) > 0.001) {
+                vec3 fric = normalize(tanVelB) * length(tanVelB) * TANGENTIAL_FRICTION * 0.5;
+                if (w2 > 0.0) {
+                    atomicAdd(deltaPositions[j * 3 + 0], int(-fric.x * w2 * scale));
+                    atomicAdd(deltaPositions[j * 3 + 1], int(-fric.y * w2 * scale));
+                    atomicAdd(deltaPositions[j * 3 + 2], int(-fric.z * w2 * scale));
+                }
+            }
         }
     }
 }
 
 // ============================================================================
-// MAIN - Multi-iteration robust resolution
+// MAIN
 // ============================================================================
 
 void main() {
@@ -245,48 +179,24 @@ void main() {
     uint i = pair.x;
     uint j = pair.y;
     
-    // Skip immediate neighbors in same cloth
     float clothID_A = prevPositions[i].w;
     float clothID_B = prevPositions[j].w;
+    
+    // Skip same-cloth close neighbors
     if (clothID_A == clothID_B) {
         uint diff = (i > j) ? (i - j) : (j - i);
         if (diff < 4) return;
     }
     
-    // Skip pinned particles
     if (positions[i].w > 0.5f || positions[j].w > 0.5f) return;
     if (pinnedFlags[i] >= 0.5f && pinnedFlags[j] >= 0.5f) return;
     
-    vec3 curPosA = positions[i].xyz;
-    vec3 curPosB = positions[j].xyz;
-    vec3 prevPosA = prevPositions[i].xyz;
-    vec3 prevPosB = prevPositions[j].xyz;
-    vec3 velA = curPosA - prevPosA;
-    vec3 velB = curPosB - prevPosB;
-    
-    // Quick rejection check
-    vec3 delta = curPosA - curPosB;
+    // Quick distance check
+    vec3 delta = positions[i].xyz - positions[j].xyz;
     float dist = length(delta);
-    float effectiveRadius = selfCollisionRadius + THICKNESS_OFFSET;
+    float checkRadius = selfCollisionRadius + BASE_CLOTH_THICKNESS + 0.1f; // Extra margin for early detection
     
-    if (dist >= effectiveRadius) return;
+    if (dist >= checkRadius) return;
     
-    // === MULTI-ITERATION RESOLUTION ===
-    for (int iter = 0; iter < RESOLUTION_ITERATIONS; iter++) {
-        // 1. Position-based resolution with thickness (core separation)
-        resolveCollisionWithThickness(i, j, curPosA, curPosB, selfCollisionRadius, iter);
-        
-        // 2. Velocity constraint (prevent future penetration - CRITICAL!)
-        applyVelocityConstraint(i, j, curPosA, curPosB, velA, velB, effectiveRadius);
-        
-        // 3. Tangential friction (prevent sliding through)
-        if (dist > 0.001) {
-            vec3 normal = delta / dist;
-            applyTangentialFriction(i, j, curPosA, curPosB, prevPosA, prevPosB, normal, effectiveRadius);
-        }
-    }
-    
-    // 4. Local pressure repulsion (density-based separation)
-    applyLocalPressure(i, curPosA, clothID_A, effectiveRadius);
-    applyLocalPressure(j, curPosB, clothID_B, effectiveRadius);
+    resolvePair(i, j, selfCollisionRadius);
 }
